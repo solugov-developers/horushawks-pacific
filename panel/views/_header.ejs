@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title><%= typeof title !== 'undefined' ? title + ' · HorusHawks' : 'HorusHawks' %></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700;9..144,800&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans:    ['Inter', 'system-ui', 'sans-serif'],
+            serif:   ['Fraunces', 'Georgia', 'serif'],
+            editorial: ['Newsreader', 'Georgia', 'serif'],
+            mono:    ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            stone: {
+              50:  '#FAF8F3', 100: '#F5F0E6', 150: '#EFE8DA', 200: '#EDE5D5',
+              300: '#DCD0BA', 400: '#B5A98F', 500: '#8C8270', 600: '#6B6354',
+              700: '#4A4338', 800: '#2E2A23', 900: '#1C1A17',
+            },
+            bronze: {
+              50: '#FBF3E8', 100: '#F4E1C5', 200: '#E5C796', 300: '#D4A767',
+              400: '#C28D52', 500: '#B8702E', 600: '#94591E', 700: '#704215',
+            },
+            ink:   { 50: '#EEF1EB', 500: '#5A6B4D', 700: '#3F4A36', 900: '#293023' },
+            sage:  { 50: '#EFF3EB', 500: '#6B8763', 700: '#4D6E4A' },
+            terra: { 50: '#F5E1DA', 500: '#B8553A', 700: '#8B3A3A' },
+            amber2:{ 50: '#F5E9CE', 500: '#C9821C', 700: '#8E5A12' },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; font-feature-settings: 'cv11','ss01'; }
+    .font-serif { font-feature-settings: 'ss01'; letter-spacing: -0.015em; }
+    .font-editorial { font-feature-settings: 'liga','dlig'; }
+    code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    [data-lucide] { width: 1.05em; height: 1.05em; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .lining  { font-variant-numeric: lining-nums tabular-nums; }
+    .hairline-num { position: relative; }
+    .hairline-num::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: rgba(28,26,23,0.18); }
+    .scroll-y { scrollbar-width: thin; scrollbar-color: #DCD0BA transparent; }
+    .scroll-y::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-y::-webkit-scrollbar-thumb { background: #DCD0BA; border-radius: 4px; }
+    .veining {
+      background-image:
+        radial-gradient(at 8% 18%, rgba(255,255,255,0.55) 0, transparent 38%),
+        radial-gradient(at 92% 12%, rgba(184,112,46,0.06) 0, transparent 40%),
+        radial-gradient(at 30% 90%, rgba(184,112,46,0.04) 0, transparent 35%),
+        linear-gradient(180deg, #FBF8F2 0%, #F5F0E6 100%);
+    }
+    .card { background: #FFFFFF; border: 1px solid rgba(28,26,23,0.07); border-radius: 18px; }
+    .card-soft { background: #FBF8F2; border: 1px solid rgba(28,26,23,0.06); border-radius: 18px; }
+    .divider { border-color: rgba(28,26,23,0.07); }
+    .btn-primary { background: #1C1A17; color: #FAF8F3; }
+    .btn-primary:hover { background: #2E2A23; }
+    .btn-accent { background: #B8702E; color: #FFF; }
+    .btn-accent:hover { background: #94591E; }
+    .btn-ghost { background: #FFFFFF; color: #1C1A17; border: 1px solid rgba(28,26,23,0.10); }
+    .btn-ghost:hover { background: #F5F0E6; }
+    .grain { position: relative; }
+    .grain::after {
+      content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .35; mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.42  0 0 0 0 0.30  0 0 0 0 0.18  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    }
+    .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 500; border: 1px solid; }
+    .b-done    { background: #EFF3EB; color: #4D6E4A; border-color: rgba(77,110,74,0.20); }
+    .b-failed  { background: #F5E1DA; color: #8B3A3A; border-color: rgba(139,58,58,0.22); }
+    .b-running { background: #EAF1F7; color: #2E5D86; border-color: rgba(46,93,134,0.22); }
+    .b-queued  { background: #F5E9CE; color: #8E5A12; border-color: rgba(142,90,18,0.22); }
+    .b-muted   { background: #EDE5D5; color: #6B6354; border-color: rgba(107,99,84,0.20); }
+    /* Drop cap editorial */
+    .dropcap::first-letter {
+      font-family: 'Fraunces', Georgia, serif; font-weight: 600; font-size: 3.6em; line-height: 0.85;
+      float: left; padding: 6px 10px 0 0; color: #94591E;
+    }
+    /* Ornamental separator */
+    .ornament { display: flex; align-items: center; gap: 12px; color: #B5A98F; }
+    .ornament::before, .ornament::after { content: ""; flex: 1; height: 1px; background: rgba(181,169,143,0.35); }
+    /* Tick-up animation pra contadores */
+    @keyframes tickup {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .tickup { animation: tickup 700ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+    .tickup-2 { animation-delay: 80ms; }
+    .tickup-3 { animation-delay: 160ms; }
+    .tickup-4 { animation-delay: 240ms; }
+    .tickup-5 { animation-delay: 320ms; }
+    .tickup-6 { animation-delay: 400ms; }
+    /* Spotlight ⌘K */
+    .kbd { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 2px 5px; border: 1px solid rgba(28,26,23,0.15); border-bottom-width: 2px; border-radius: 4px; background: #FBF8F2; color: #6B6354; }
+    /* Hover sparkline reveal */
+    .reveal-on-hover .reveal { opacity: 0; transition: opacity 200ms; }
+    .reveal-on-hover:hover .reveal { opacity: 1; }
+  </style>
+</head>
+<body class="bg-stone-100 text-stone-900 antialiased min-h-screen">
+  <% const path = (typeof currentPath !== 'undefined') ? currentPath : ''; %>
+  <% const veiningSvg = typeof veining !== 'undefined' ? veining : ''; %>
+  <div class="flex min-h-screen">
+    <!-- SIDEBAR -->
+    <aside class="hidden md:flex w-64 flex-col fixed inset-y-0 left-0 z-30 border-r divider bg-stone-50">
+      <div class="px-6 pt-6 pb-5">
+        <a href="/" class="flex items-center gap-3">
+          <div class="relative h-10 w-10 rounded-xl overflow-hidden veining grain ring-1 ring-stone-300/60 flex items-center justify-center">
+            <svg viewBox="0 0 32 32" class="w-6 h-6 text-bronze-600" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M16 4 L11 11 L4 13 L8 18 L6 26 L13 22 L19 22 L26 26 L24 18 L28 13 L21 11 Z"/>
+              <circle cx="16" cy="14" r="1.2" fill="currentColor"/>
+            </svg>
+          </div>
+          <div>
+            <div class="font-serif text-base font-semibold tracking-tight">HorusHawks</div>
+            <div class="text-[10px] text-stone-500 tracking-[0.18em] uppercase">Stone Intelligence</div>
+          </div>
+        </a>
+      </div>
+      <nav class="flex-1 px-3 space-y-0.5">
+        <a href="/" class="<%= path === '/' || path === '/dashboard' ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="layout-template"></i><span>Relatório</span>
+        </a>
+        <a href="/scrapers" class="<%= path.startsWith('/scrapers') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="cpu"></i><span>Robôs</span>
+        </a>
+        <a href="/jobs" class="<%= path.startsWith('/jobs') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="activity"></i><span>Execuções</span>
+        </a>
+        <a href="/data" class="<%= path.startsWith('/data') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="database"></i><span>Inventário</span>
+        </a>
+        <a href="/movements" class="<%= path.startsWith('/movements') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="git-compare"></i><span>Movimentação</span>
+        </a>
+        <div class="pt-5 pb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-stone-500">Plataforma</div>
+        <a href="/api-tokens" class="<%= path.startsWith('/api-tokens') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="key-round"></i><span>API & tokens</span>
+        </a>
+        <a href="/webhooks" class="<%= path.startsWith('/webhooks') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="webhook"></i><span>Webhooks</span>
+        </a>
+        <a href="/audit" class="<%= path.startsWith('/audit') ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-200/60' %> flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="scroll-text"></i><span>Auditoria</span>
+        </a>
+        <a href="/scrapers/new" class="text-stone-700 hover:bg-stone-200/60 flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors">
+          <i data-lucide="plus"></i><span>Novo robô</span>
+        </a>
+      </nav>
+      <div class="px-3 pb-5 pt-3 border-t divider mt-3">
+        <button onclick="openSpotlight()" class="w-full flex items-center justify-between gap-2 rounded-lg card-soft px-3 py-2 mb-2 text-stone-600 hover:text-stone-900 transition-colors">
+          <span class="flex items-center gap-2 text-[13px]"><i data-lucide="search" class="!w-3.5 !h-3.5"></i> Buscar tudo</span>
+          <span class="kbd">⌘K</span>
+        </button>
+        <div class="rounded-xl card-soft p-3 flex items-center gap-3">
+          <div class="h-8 w-8 rounded-full veining grain ring-1 ring-stone-300/60 flex items-center justify-center font-serif text-sm font-semibold text-bronze-600">A</div>
+          <div class="flex-1 min-w-0">
+            <div class="text-[13px] font-medium leading-tight truncate">Admin</div>
+            <div class="text-[10px] text-stone-500 leading-tight truncate">conta principal</div>
+          </div>
+          <form action="/logout" method="post">
+            <button type="submit" title="Sair" class="text-stone-500 hover:text-stone-900 transition-colors"><i data-lucide="log-out"></i></button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <div class="flex-1 md:pl-64 flex flex-col">
+      <header class="h-20 flex items-end pb-4 px-8 pt-6 border-b divider bg-stone-100/80 backdrop-blur sticky top-0 z-20">
+        <div class="flex w-full items-end justify-between gap-4">
+          <div>
+            <% if (typeof eyebrow !== 'undefined' && eyebrow) { %>
+              <p class="text-[11px] uppercase tracking-[0.18em] text-bronze-600 font-medium mb-1"><%= eyebrow %></p>
+            <% } %>
+            <h1 class="font-serif text-2xl md:text-[28px] font-semibold leading-tight tracking-tight"><%= typeof title !== 'undefined' ? title : 'HorusHawks' %></h1>
+            <% if (typeof subtitle !== 'undefined' && subtitle) { %>
+              <p class="text-sm text-stone-500 mt-1"><%= subtitle %></p>
+            <% } %>
+          </div>
+          <div class="hidden md:flex items-center gap-3 text-xs text-stone-500">
+            <span class="inline-flex items-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-sage-500"></span> sistema operacional</span>
+            <span class="text-stone-300">·</span>
+            <span class="tabular"><%= new Date().toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' }) %></span>
+          </div>
+        </div>
+      </header>
+      <main class="flex-1 px-8 py-8 max-w-[1400px] w-full mx-auto">

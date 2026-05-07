@@ -1,0 +1,85 @@
+<%- include('_header', { eyebrow: 'Plataforma', title: 'API & tokens', subtitle: 'Bearer tokens para integrações externas', currentPath: '/api-tokens' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—'; } %>
+
+<% if (newToken) { %>
+  <div class="card p-5 mb-6 border border-bronze-300/50 bg-bronze-50">
+    <div class="flex items-start gap-3">
+      <i data-lucide="check-circle" class="text-bronze-700 mt-0.5"></i>
+      <div class="flex-1 min-w-0">
+        <p class="font-serif text-base font-semibold text-stone-900">Token criado</p>
+        <p class="text-xs text-stone-600 mt-0.5">Copie agora — depois disso só ficará visível o prefixo.</p>
+        <code class="block mt-3 mono text-sm bg-white border divider rounded-lg px-3 py-2 break-all"><%= newToken %></code>
+        <p class="text-[11px] text-stone-500 mt-2">Use no header: <code class="mono">Authorization: Bearer &lt;token&gt;</code></p>
+      </div>
+    </div>
+  </div>
+<% } %>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+  <!-- Form criar -->
+  <div class="card p-6 lg:col-span-1 self-start">
+    <h3 class="font-serif text-lg font-semibold mb-3">Criar novo token</h3>
+    <form action="/api-tokens" method="post" class="space-y-3">
+      <div>
+        <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Nome</label>
+        <input type="text" name="name" required placeholder="ex: integração Notion" class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2 text-sm focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20">
+      </div>
+      <button type="submit" class="w-full rounded-lg btn-primary px-3 py-2 text-sm font-medium inline-flex items-center justify-center gap-2">
+        <i data-lucide="plus" class="!w-4 !h-4"></i> Gerar token
+      </button>
+    </form>
+
+    <div class="mt-6 pt-5 border-t divider text-xs text-stone-500 space-y-2">
+      <p class="font-medium text-stone-700">Endpoints disponíveis:</p>
+      <code class="block mono">GET /api/v1/scrapers</code>
+      <code class="block mono">GET /api/v1/jobs?limit=50</code>
+      <code class="block mono">GET /api/v1/slabs?source=encore&limit=100</code>
+      <code class="block mono">GET /api/v1/movements?limit=100</code>
+    </div>
+  </div>
+
+  <!-- Lista -->
+  <div class="card overflow-hidden lg:col-span-2">
+    <div class="px-6 py-4 border-b divider">
+      <h3 class="font-serif text-lg font-semibold">Tokens ativos</h3>
+    </div>
+    <div class="overflow-x-auto scroll-y">
+      <table class="w-full text-sm">
+        <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+          <tr class="border-b divider">
+            <th class="text-left font-semibold px-6 py-3">Nome</th>
+            <th class="text-left font-semibold px-6 py-3">Prefixo</th>
+            <th class="text-left font-semibold px-6 py-3">Criado</th>
+            <th class="text-left font-semibold px-6 py-3">Último uso</th>
+            <th class="text-right font-semibold px-6 py-3"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (!tokens.length) { %>
+            <tr><td colspan="5" class="px-6 py-10 text-center text-stone-500">Nenhum token criado.</td></tr>
+          <% } %>
+          <% tokens.forEach(t => { %>
+            <tr class="border-b divider last:border-0 hover:bg-stone-50 <%= t.revoked_at ? 'opacity-60' : '' %>">
+              <td class="px-6 py-3 font-medium text-stone-900"><%= t.name %><% if (t.revoked_at) { %> <span class="badge b-muted">revogado</span><% } %></td>
+              <td class="px-6 py-3 mono text-stone-600"><%= t.prefix %>…</td>
+              <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDate(t.created_at) %></td>
+              <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDate(t.last_used_at) %></td>
+              <td class="px-6 py-3 text-right">
+                <% if (!t.revoked_at) { %>
+                  <form action="/api-tokens/<%= t.id %>/revoke" method="post" class="inline" onsubmit="return confirm('Revogar token <%= t.name %>?')">
+                    <button type="submit" class="inline-flex items-center gap-1 rounded-md border border-terra-500/30 bg-terra-50 text-terra-700 hover:bg-terra-500/15 px-2.5 py-1 text-xs">
+                      <i data-lucide="x-circle" class="!w-3 !h-3"></i> Revogar
+                    </button>
+                  </form>
+                <% } %>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<%- include('_footer') %>

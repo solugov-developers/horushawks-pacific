@@ -1,0 +1,84 @@
+<%- include('_header', { eyebrow: 'Operação', title: 'Execuções', subtitle: 'Histórico completo de jobs', currentPath: '/jobs' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }) : '—'; } %>
+<% function fmtDur(s) { return s == null ? '—' : (s < 60 ? s + 's' : Math.floor(s/60) + 'm ' + (s%60) + 's'); } %>
+<% function statusBadge(status) {
+  const map = { done: 'b-done', failed: 'b-failed', running: 'b-running', queued: 'b-queued' };
+  return `<span class="badge ${map[status] || 'b-muted'}">${status}</span>`;
+} %>
+
+<form method="get" class="card p-4 flex flex-wrap items-end gap-3 mb-5">
+  <div>
+    <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Robô</label>
+    <select name="scraper_id" class="rounded-lg bg-white border border-stone-300/80 px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20">
+      <option value="">Todos</option>
+      <% scrapers.forEach(s => { %>
+        <option value="<%= s.id %>" <%= filters.scraperId == s.id ? 'selected' : '' %>><%= s.name %></option>
+      <% }) %>
+    </select>
+  </div>
+  <div>
+    <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Status</label>
+    <select name="status" class="rounded-lg bg-white border border-stone-300/80 px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20">
+      <option value="">Todos</option>
+      <% ['queued','running','done','failed'].forEach(st => { %>
+        <option value="<%= st %>" <%= filters.status === st ? 'selected' : '' %>><%= st %></option>
+      <% }) %>
+    </select>
+  </div>
+  <button type="submit" class="rounded-lg btn-primary px-3.5 py-2 text-sm font-medium inline-flex items-center gap-1.5">
+    <i data-lucide="filter" class="!w-3.5 !h-3.5"></i> Filtrar
+  </button>
+  <a href="/jobs" class="text-xs text-stone-500 hover:text-stone-900 self-end pb-2">limpar</a>
+</form>
+
+<div class="card overflow-hidden">
+  <div class="overflow-x-auto scroll-y">
+    <table class="w-full text-sm">
+      <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+        <tr class="border-b divider">
+          <th class="text-left font-semibold px-6 py-3.5">ID</th>
+          <th class="text-left font-semibold px-6 py-3.5">Robô</th>
+          <th class="text-left font-semibold px-6 py-3.5">Status</th>
+          <th class="text-left font-semibold px-6 py-3.5">Origem</th>
+          <th class="text-left font-semibold px-6 py-3.5">Início</th>
+          <th class="text-left font-semibold px-6 py-3.5">Fim</th>
+          <th class="text-left font-semibold px-6 py-3.5">Duração</th>
+          <th class="text-left font-semibold px-6 py-3.5">Erro</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (jobs.length === 0) { %>
+          <tr><td colspan="8" class="px-6 py-10 text-center text-stone-500">Sem execuções pra esse filtro.</td></tr>
+        <% } %>
+        <% jobs.forEach(j => { %>
+          <tr class="border-b divider last:border-0 hover:bg-stone-50">
+            <td class="px-6 py-3 mono text-stone-500">#<%= j.id %></td>
+            <td class="px-6 py-3"><a href="/scrapers/<%= j.scraper_id %>/results" class="text-stone-900 hover:text-bronze-700 font-medium"><%= j.scraper_name %></a></td>
+            <td class="px-6 py-3"><%- statusBadge(j.status) %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs"><%= j.triggered_by %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDate(j.started_at) %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDate(j.finished_at) %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDur(j.duration_s) %></td>
+            <td class="px-6 py-3 text-terra-700 text-xs max-w-[300px] truncate" title="<%= j.error || '' %>"><%= j.error || '' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% if (pagination.total > pagination.perPage) { %>
+    <div class="flex items-center justify-between px-6 py-3 border-t divider text-xs text-stone-500">
+      <span>Página <%= pagination.page %> de <%= pagination.totalPages %> · <%= pagination.total %> execuções</span>
+      <div class="flex gap-1.5">
+        <% if (pagination.page > 1) { %>
+          <a href="?<%= pagination.qs %>&page=<%= pagination.page - 1 %>" class="rounded-md btn-ghost px-3 py-1.5">‹ anterior</a>
+        <% } %>
+        <% if (pagination.page < pagination.totalPages) { %>
+          <a href="?<%= pagination.qs %>&page=<%= pagination.page + 1 %>" class="rounded-md btn-ghost px-3 py-1.5">próxima ›</a>
+        <% } %>
+      </div>
+    </div>
+  <% } %>
+</div>
+
+<%- include('_footer') %>

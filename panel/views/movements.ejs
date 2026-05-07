@@ -1,0 +1,93 @@
+<%- include('_header', { eyebrow: 'Inventário', title: 'Movimentação', subtitle: 'O que entrou, saiu e mudou de preço entre coletas', currentPath: '/movements' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }) : '—'; } %>
+
+<!-- Resumo 7d -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+  <% [
+    { label: 'Novas',         value: summary.added,         icon: 'plus-circle',  color: 'text-sage-700',  bg: 'bg-sage-50' },
+    { label: 'Esgotadas',     value: summary.removed,       icon: 'minus-circle', color: 'text-terra-700', bg: 'bg-terra-50' },
+    { label: 'Preço alterado',value: summary.price_changed, icon: 'dollar-sign',  color: 'text-bronze-600',bg: 'bg-bronze-50' },
+    { label: 'Qtd alterada',  value: summary.qty_changed,   icon: 'package',      color: 'text-bronze-600',bg: 'bg-bronze-50' },
+  ].forEach(s => { %>
+    <div class="card p-4">
+      <div class="flex items-center justify-between">
+        <p class="text-[11px] uppercase tracking-[0.14em] text-stone-500"><%= s.label %></p>
+        <div class="h-8 w-8 rounded-full <%= s.bg %> flex items-center justify-center <%= s.color %>"><i data-lucide="<%= s.icon %>"></i></div>
+      </div>
+      <p class="font-serif text-3xl font-semibold mt-3 tabular leading-none"><%= s.value.toLocaleString('pt-BR') %></p>
+      <p class="text-[11px] text-stone-500 mt-2">últimos 7 dias</p>
+    </div>
+  <% }) %>
+</div>
+
+<!-- Filtros -->
+<form method="get" class="card p-4 flex flex-wrap items-end gap-3 mb-5">
+  <div>
+    <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Robô</label>
+    <select name="scraper_id" class="rounded-lg bg-white border border-stone-300/80 px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20">
+      <option value="">Todos</option>
+      <% scrapers.forEach(s => { %>
+        <option value="<%= s.id %>" <%= filters.scraperId == s.id ? 'selected' : '' %>><%= s.name %></option>
+      <% }) %>
+    </select>
+  </div>
+  <div>
+    <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Tipo</label>
+    <select name="kind" class="rounded-lg bg-white border border-stone-300/80 px-3 py-2 text-sm text-stone-900 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20">
+      <option value="">Todos</option>
+      <% [['added','novas'],['removed','esgotadas'],['price_changed','preço'],['qty_changed','quantidade']].forEach(([v, l]) => { %>
+        <option value="<%= v %>" <%= filters.kind === v ? 'selected' : '' %>><%= l %></option>
+      <% }) %>
+    </select>
+  </div>
+  <button type="submit" class="rounded-lg btn-primary px-3.5 py-2 text-sm font-medium inline-flex items-center gap-1.5">
+    <i data-lucide="filter" class="!w-3.5 !h-3.5"></i> Filtrar
+  </button>
+  <a href="/movements" class="text-xs text-stone-500 hover:text-stone-900 self-end pb-2">limpar</a>
+</form>
+
+<div class="card overflow-hidden">
+  <ul class="divide-y divider">
+    <% if (!movements.length) { %>
+      <li class="px-6 py-10 text-center text-sm text-stone-500">Sem movimentação registrada.</li>
+    <% } %>
+    <% movements.forEach(m => {
+      const cfg = {
+        added:         { icon: 'plus-circle',  color: 'text-sage-700',  label: 'novo',      },
+        removed:       { icon: 'minus-circle', color: 'text-terra-700', label: 'esgotado',  },
+        price_changed: { icon: 'dollar-sign',  color: 'text-bronze-600',label: 'preço',     },
+        qty_changed:   { icon: 'package',      color: 'text-bronze-600',label: 'quantidade',},
+      }[m.kind] || { icon: 'circle', color: 'text-stone-500', label: m.kind };
+    %>
+      <li class="px-6 py-3 flex items-start gap-3">
+        <i data-lucide="<%= cfg.icon %>" class="<%= cfg.color %> mt-0.5"></i>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm text-stone-900 truncate"><%= m.item_name || '(sem nome)' %></p>
+          <p class="text-[11px] text-stone-500">
+            <span class="<%= cfg.color %>"><%= cfg.label %></span>
+            <% if (m.prev_value || m.next_value) { %> · <code class="mono text-stone-600"><%= m.prev_value || '—' %> → <%= m.next_value || '—' %></code><% } %>
+            · <a href="/scrapers/<%= m.scraper_id %>/results" class="text-stone-600 hover:text-bronze-700"><%= m.scraper_name %></a>
+            · <code class="mono text-stone-500"><%= m.source_key %></code>
+          </p>
+        </div>
+        <span class="text-[11px] text-stone-400 tabular shrink-0"><%= fmtDate(m.detected_at) %></span>
+      </li>
+    <% }) %>
+  </ul>
+  <% if (pagination.total > pagination.perPage) { %>
+    <div class="flex items-center justify-between px-6 py-3 border-t divider text-xs text-stone-500">
+      <span>Página <%= pagination.page %> de <%= pagination.totalPages %> · <%= pagination.total %> registros</span>
+      <div class="flex gap-1.5">
+        <% if (pagination.page > 1) { %>
+          <a href="?<%= pagination.qs %>&page=<%= pagination.page - 1 %>" class="rounded-md btn-ghost px-3 py-1.5">‹ anterior</a>
+        <% } %>
+        <% if (pagination.page < pagination.totalPages) { %>
+          <a href="?<%= pagination.qs %>&page=<%= pagination.page + 1 %>" class="rounded-md btn-ghost px-3 py-1.5">próxima ›</a>
+        <% } %>
+      </div>
+    </div>
+  <% } %>
+</div>
+
+<%- include('_footer') %>

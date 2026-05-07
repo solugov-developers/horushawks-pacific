@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Entrar · Atelier Stone</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .font-serif { font-family: 'Fraunces', Georgia, serif; letter-spacing: -0.01em; }
+    [data-lucide] { width: 1.05em; height: 1.05em; }
+    .veining {
+      background-image:
+        radial-gradient(at 6% 12%, rgba(255,255,255,0.7) 0, transparent 38%),
+        radial-gradient(at 90% 8%, rgba(184,112,46,0.10) 0, transparent 42%),
+        radial-gradient(at 30% 95%, rgba(184,112,46,0.05) 0, transparent 35%),
+        linear-gradient(180deg, #FBF8F2 0%, #F1E9D9 100%);
+    }
+    /* veining svg overlay */
+    .vein-svg {
+      position: absolute; inset: 0; pointer-events: none; opacity: 0.25;
+    }
+    .grain::after {
+      content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .35; mix-blend-mode: multiply;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.42  0 0 0 0 0.30  0 0 0 0 0.18  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    }
+  </style>
+</head>
+<body class="min-h-screen text-stone-900 antialiased">
+  <div class="grid grid-cols-1 lg:grid-cols-2 min-h-screen">
+
+    <!-- Lado esquerdo (mármore) -->
+    <div class="relative veining hidden lg:flex flex-col justify-between p-10 grain overflow-hidden">
+      <svg class="vein-svg" viewBox="0 0 600 800" preserveAspectRatio="none">
+        <path d="M-20,120 C150,100 320,200 460,160 C540,140 600,180 620,220" stroke="#94591E" stroke-width="0.6" fill="none" opacity="0.55"/>
+        <path d="M-20,260 C160,240 240,320 360,290 C500,260 600,330 640,310" stroke="#94591E" stroke-width="0.4" fill="none" opacity="0.4"/>
+        <path d="M-30,540 C160,520 280,600 420,560 C540,530 620,580 640,560" stroke="#94591E" stroke-width="0.5" fill="none" opacity="0.5"/>
+        <path d="M-20,700 C140,680 320,740 460,700 C580,670 620,710 640,700" stroke="#94591E" stroke-width="0.3" fill="none" opacity="0.35"/>
+      </svg>
+      <div class="relative z-10">
+        <div class="flex items-center gap-2.5">
+          <div class="relative h-10 w-10 rounded-xl overflow-hidden bg-white/40 ring-1 ring-stone-300/80 flex items-center justify-center font-serif font-semibold text-bronze-600">A</div>
+          <div>
+            <div class="font-serif text-base font-semibold tracking-tight">Atelier Stone</div>
+            <div class="text-[10px] text-stone-500 tracking-[0.16em] uppercase">Plataforma de coleta</div>
+          </div>
+        </div>
+      </div>
+      <div class="relative z-10 max-w-md">
+        <p class="text-[11px] uppercase tracking-[0.18em] text-bronze-600 mb-3">Inventário em movimento</p>
+        <h1 class="font-serif text-4xl xl:text-5xl font-semibold leading-[1.05] text-stone-900">Cada chapa rastreada com precisão de pedreiro.</h1>
+        <p class="mt-5 text-sm text-stone-600 leading-relaxed">Robôs autônomos, agendamentos por cron e um banco SQL pronto para BI — tudo num só painel, do mármore ao granito.</p>
+      </div>
+      <div class="relative z-10 text-[11px] text-stone-500">
+        <span class="font-serif">Atelier Stone</span> · v1.0 · scrape-api
+      </div>
+    </div>
+
+    <!-- Lado direito (form) -->
+    <div class="flex items-center justify-center p-8 bg-stone-50">
+      <div class="w-full max-w-sm">
+        <div class="lg:hidden flex items-center gap-2.5 mb-8">
+          <div class="h-10 w-10 rounded-xl bg-stone-100 ring-1 ring-stone-300/80 flex items-center justify-center font-serif font-semibold text-bronze-600">A</div>
+          <div class="font-serif text-lg font-semibold">Atelier Stone</div>
+        </div>
+        <p class="text-[11px] uppercase tracking-[0.18em] text-bronze-600 mb-2">Acesso restrito</p>
+        <h2 class="font-serif text-3xl font-semibold mb-1.5 leading-tight">Entrar na plataforma</h2>
+        <p class="text-sm text-stone-500 mb-6">Use suas credenciais de administrador.</p>
+
+        <% if (error) { %>
+          <div class="mb-5 flex items-start gap-2 rounded-lg border border-terra-500/30 bg-terra-50 px-3 py-2.5 text-sm text-terra-700">
+            <i data-lucide="alert-circle" class="mt-0.5"></i><span><%= error %></span>
+          </div>
+        <% } %>
+
+        <form action="/login" method="post" class="space-y-3.5">
+          <div>
+            <label class="block text-[11px] font-semibold tracking-wider uppercase text-stone-500 mb-1.5">Usuário</label>
+            <input type="text" name="username" autofocus required class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20" placeholder="admin">
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold tracking-wider uppercase text-stone-500 mb-1.5">Senha</label>
+            <input type="password" name="password" required class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20" placeholder="••••••••">
+          </div>
+          <button type="submit" class="w-full rounded-lg bg-stone-900 hover:bg-stone-800 py-2.5 text-sm font-medium text-stone-50 transition-colors">
+            Entrar
+          </button>
+        </form>
+        <p class="mt-6 text-center text-[11px] text-stone-400">Atelier Stone · v1.0</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

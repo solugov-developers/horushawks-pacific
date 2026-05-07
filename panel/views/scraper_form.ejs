@@ -1,0 +1,78 @@
+<%- include('_header', { eyebrow: scraper ? 'Editar' : 'Novo', title: scraper ? scraper.name : 'Configurar robô', subtitle: 'URL, agendamento e ações JSON', currentPath: '/scrapers' }) %>
+
+<a href="/scrapers" class="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-stone-900 mb-4">
+  <i data-lucide="arrow-left" class="!w-3 !h-3"></i> Voltar
+</a>
+
+<% if (error) { %>
+  <div class="mb-5 flex items-start gap-2 rounded-lg border border-terra-500/30 bg-terra-50 px-3.5 py-3 text-sm text-terra-700">
+    <i data-lucide="alert-circle" class="mt-0.5"></i><span><%= error %></span>
+  </div>
+<% } %>
+
+<form action="/scrapers" method="post" class="space-y-5 max-w-3xl">
+  <% if (scraper && scraper.id) { %><input type="hidden" name="id" value="<%= scraper.id %>"><% } %>
+
+  <div class="card p-6">
+    <h3 class="font-serif text-lg font-semibold mb-4">Identificação</h3>
+    <div class="space-y-4">
+      <div>
+        <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Nome (único)</label>
+        <input type="text" name="name" required value="<%= scraper ? scraper.name : '' %>" class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20" placeholder="ex: encore">
+      </div>
+      <div>
+        <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Descrição</label>
+        <input type="text" name="description" value="<%= scraper && scraper.description ? scraper.description : '' %>" class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20" placeholder="o que esse robô faz?">
+      </div>
+      <div>
+        <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">URL alvo</label>
+        <input type="text" name="url" required value="<%= scraper ? scraper.url : '' %>" class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20 mono" placeholder="https://...">
+      </div>
+    </div>
+  </div>
+
+  <div class="card p-6">
+    <h3 class="font-serif text-lg font-semibold mb-4">Agendamento</h3>
+    <label class="block text-[11px] font-semibold uppercase tracking-wider text-stone-500 mb-1.5">Cron (opcional)</label>
+    <input type="text" id="cron-input" name="schedule" value="<%= scraper && scraper.schedule ? scraper.schedule : '' %>" class="w-full rounded-lg bg-white border border-stone-300/80 px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20 mono" placeholder="0 6 * * *">
+    <p class="text-[11px] text-stone-500 mt-2">Formato: <code class="mono text-stone-700">min hora dia mês dia-semana</code>. Vazio = só execução manual.</p>
+
+    <div class="mt-4 flex flex-wrap gap-1.5">
+      <% [
+        ['*/15 * * * *', 'a cada 15min'],
+        ['0 * * * *',    'de hora em hora'],
+        ['0 6 * * *',    'todo dia · 06h'],
+        ['0 9 * * *',    'todo dia · 09h'],
+        ['0 6,18 * * *', '06h e 18h'],
+        ['0 8 * * 1-5',  'dias úteis · 08h'],
+        ['0 6 * * 1',    'segundas · 06h'],
+      ].forEach(([cron, label]) => { %>
+        <button type="button" onclick="document.getElementById('cron-input').value='<%= cron %>'" class="text-xs rounded-full bg-stone-100 hover:bg-stone-200 border divider px-3 py-1.5 text-stone-700 transition-colors">
+          <%= label %>
+        </button>
+      <% }) %>
+    </div>
+
+    <label class="flex items-center gap-2 mt-5 pt-4 border-t divider">
+      <input type="checkbox" name="enabled" <%= !scraper || scraper.enabled ? 'checked' : '' %> class="h-4 w-4 rounded border-stone-300 bg-white text-bronze-500 focus:ring-bronze-500/30">
+      <span class="text-sm text-stone-700">Ativo</span>
+    </label>
+  </div>
+
+  <div class="card p-6">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-serif text-lg font-semibold">Ações (JSON)</h3>
+      <span class="text-[11px] text-stone-500">tipos: fetch_json, loop, save_rows, click, extract_text...</span>
+    </div>
+    <textarea name="actions" rows="20" required class="w-full rounded-lg bg-stone-50 border border-stone-300/80 px-3.5 py-2.5 text-xs text-stone-900 mono leading-relaxed focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20"><%= scraper ? (typeof scraper.actions === 'string' ? scraper.actions : JSON.stringify(scraper.actions, null, 2)) : '[\n  { "type": "fetch_json", "url": "https://...", "save_as": "data" }\n]' %></textarea>
+  </div>
+
+  <div class="flex items-center justify-end gap-2">
+    <a href="/scrapers" class="rounded-lg btn-ghost px-4 py-2.5 text-sm">Cancelar</a>
+    <button type="submit" class="inline-flex items-center gap-2 rounded-lg btn-primary px-4 py-2.5 text-sm font-medium">
+      <i data-lucide="save" class="!w-4 !h-4"></i> Salvar
+    </button>
+  </div>
+</form>
+
+<%- include('_footer') %>

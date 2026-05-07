@@ -1,0 +1,37 @@
+<%- include('_header', { eyebrow: 'Plataforma', title: 'Auditoria', subtitle: 'Trilha de eventos do painel — últimas 200', currentPath: '/audit' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }) : '—'; } %>
+
+<div class="card overflow-hidden">
+  <div class="overflow-x-auto scroll-y">
+    <table class="w-full text-sm">
+      <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+        <tr class="border-b divider">
+          <th class="text-left font-semibold px-6 py-3">Quando</th>
+          <th class="text-left font-semibold px-6 py-3">Ator</th>
+          <th class="text-left font-semibold px-6 py-3">Ação</th>
+          <th class="text-left font-semibold px-6 py-3">Alvo</th>
+          <th class="text-left font-semibold px-6 py-3">Metadata</th>
+          <th class="text-left font-semibold px-6 py-3">IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (!entries.length) { %>
+          <tr><td colspan="6" class="px-6 py-10 text-center text-stone-500">Sem eventos.</td></tr>
+        <% } %>
+        <% entries.forEach(e => { %>
+          <tr class="border-b divider last:border-0 hover:bg-stone-50">
+            <td class="px-6 py-2.5 text-xs text-stone-500 tabular whitespace-nowrap"><%= fmtDate(e.created_at) %></td>
+            <td class="px-6 py-2.5 font-medium text-stone-900"><%= e.actor %></td>
+            <td class="px-6 py-2.5"><code class="mono text-xs text-bronze-700"><%= e.action %></code></td>
+            <td class="px-6 py-2.5 text-xs text-stone-700"><%= e.target || '' %></td>
+            <td class="px-6 py-2.5"><code class="mono text-[11px] text-stone-500"><%= JSON.stringify(e.metadata) %></code></td>
+            <td class="px-6 py-2.5 text-[11px] text-stone-500 mono"><%= e.ip || '' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<%- include('_footer') %>

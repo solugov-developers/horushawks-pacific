@@ -1,0 +1,115 @@
+<%- include('_header', { eyebrow: 'Robô', title: scraper.name, subtitle: scraper.description || 'Histórico de execuções e resultados', currentPath: '/scrapers' }) %>
+
+<% if (runningJob) { %>
+  <%- include('partials/progress_card', { runningJob }) %>
+<% } else { %>
+  <div id="progress-slot" hx-get="/scrapers/<%= scraper.id %>/progress" hx-trigger="load delay:5s" hx-swap="outerHTML"></div>
+<% } %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }) : '—'; } %>
+<% function fmtDur(s) { return s == null ? '—' : (s < 60 ? s + 's' : Math.floor(s/60) + 'm ' + (s%60) + 's'); } %>
+<% function statusBadge(status) {
+  const map = { done: 'b-done', failed: 'b-failed', running: 'b-running', queued: 'b-queued' };
+  return `<span class="badge ${map[status] || 'b-muted'}">${status}</span>`;
+} %>
+
+<div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+  <a href="/scrapers" class="inline-flex items-center gap-1 text-xs text-stone-500 hover:text-stone-900">
+    <i data-lucide="arrow-left" class="!w-3 !h-3"></i> Voltar para robôs
+  </a>
+  <div class="flex items-center gap-2">
+    <form action="/scrapers/<%= scraper.id %>/run" method="post">
+      <button type="submit" class="inline-flex items-center gap-2 rounded-lg btn-accent px-4 py-2 text-sm font-medium">
+        <i data-lucide="play" class="!w-4 !h-4"></i> Rodar agora
+      </button>
+    </form>
+    <a href="/scrapers/<%= scraper.id %>/edit" class="inline-flex items-center gap-2 rounded-lg btn-ghost px-4 py-2 text-sm">
+      <i data-lucide="pencil" class="!w-4 !h-4"></i> Editar
+    </a>
+  </div>
+</div>
+
+<div class="card p-5 mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div>
+    <p class="text-[11px] uppercase tracking-[0.14em] text-stone-500 mb-1">URL</p>
+    <p class="mono text-xs text-stone-700 break-all"><%= scraper.url %></p>
+  </div>
+  <div>
+    <p class="text-[11px] uppercase tracking-[0.14em] text-stone-500 mb-1">Cron</p>
+    <code class="mono text-sm text-stone-900"><%= scraper.schedule || '— manual —' %></code>
+  </div>
+  <div>
+    <p class="text-[11px] uppercase tracking-[0.14em] text-stone-500 mb-1">Status</p>
+    <% if (scraper.enabled) { %>
+      <span class="badge b-done">ativo</span>
+    <% } else { %>
+      <span class="badge b-muted">desativado</span>
+    <% } %>
+  </div>
+</div>
+
+<div class="card overflow-hidden mb-6">
+  <div class="px-6 py-4 border-b divider">
+    <h3 class="font-serif text-xl font-semibold">Histórico de execuções</h3>
+    <p class="text-xs text-stone-500 mt-0.5">últimas 50</p>
+  </div>
+  <div class="overflow-x-auto scroll-y">
+    <table class="w-full text-sm">
+      <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+        <tr class="border-b divider">
+          <th class="text-left font-semibold px-6 py-3">Job</th>
+          <th class="text-left font-semibold px-6 py-3">Status</th>
+          <th class="text-left font-semibold px-6 py-3">Origem</th>
+          <th class="text-left font-semibold px-6 py-3">Início</th>
+          <th class="text-left font-semibold px-6 py-3">Duração</th>
+          <th class="text-left font-semibold px-6 py-3">Erro</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (jobs.length === 0) { %>
+          <tr><td colspan="6" class="px-6 py-8 text-center text-stone-500">Sem execuções ainda.</td></tr>
+        <% } %>
+        <% jobs.forEach(j => {
+          const dur = (j.started_at && j.finished_at) ? Math.floor((new Date(j.finished_at) - new Date(j.started_at))/1000) : null;
+        %>
+          <tr class="border-b divider last:border-0 hover:bg-stone-50">
+            <td class="px-6 py-3 mono text-stone-500">#<%= j.id %></td>
+            <td class="px-6 py-3"><%- statusBadge(j.status) %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs"><%= j.triggered_by %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDate(j.started_at) %></td>
+            <td class="px-6 py-3 text-stone-500 text-xs tabular"><%= fmtDur(dur) %></td>
+            <td class="px-6 py-3 text-terra-700 text-xs max-w-md truncate" title="<%= j.error || '' %>"><%= j.error || '' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card overflow-hidden">
+  <div class="px-6 py-4 border-b divider">
+    <h3 class="font-serif text-xl font-semibold">Últimos resultados</h3>
+    <p class="text-xs text-stone-500 mt-0.5">payload retornado pelo motor (resumo + linhas persistidas em SQL)</p>
+  </div>
+  <div class="p-5 space-y-3">
+    <% if (results.length === 0) { %>
+      <p class="text-sm text-stone-500 text-center py-4">Sem resultados ainda.</p>
+    <% } %>
+    <% results.forEach(r => { %>
+      <details class="rounded-xl border divider bg-stone-50 overflow-hidden">
+        <summary class="flex items-center justify-between gap-2 px-5 py-3 cursor-pointer hover:bg-stone-100">
+          <div class="flex items-center gap-2.5 text-sm">
+            <i data-lucide="file-json" class="text-bronze-600"></i>
+            <span class="text-stone-900 font-medium">Job #<%= r.job_id %></span>
+            <span class="text-stone-300">·</span>
+            <span class="text-stone-500 text-xs tabular"><%= fmtDate(r.created_at) %></span>
+          </div>
+          <i data-lucide="chevron-down" class="text-stone-400"></i>
+        </summary>
+        <pre class="text-xs text-stone-700 bg-stone-50 p-5 overflow-auto scroll-y max-h-96 mono border-t divider"><%= JSON.stringify(r.payload, null, 2) %></pre>
+      </details>
+    <% }) %>
+  </div>
+</div>
+
+<%- include('_footer') %>

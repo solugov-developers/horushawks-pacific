@@ -1,0 +1,99 @@
+<%- include('_header', { eyebrow: 'Postgres', title: 'Inventário', subtitle: 'Explore as tabelas do banco', currentPath: '/data' }) %>
+
+<div class="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-5">
+  <!-- Sidebar de tabelas -->
+  <aside class="card p-2.5 self-start">
+    <div class="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-stone-500">Tabelas</div>
+    <ul class="space-y-0.5">
+      <% tables.forEach(t => { %>
+        <li>
+          <a href="/data?table=<%= t.name %>" class="<%= t.name === currentTable ? 'bg-stone-900 text-stone-50' : 'text-stone-700 hover:bg-stone-100' %> flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors">
+            <span class="flex items-center gap-2 min-w-0">
+              <i data-lucide="table" class="!w-3.5 !h-3.5"></i>
+              <span class="mono truncate"><%= t.name %></span>
+            </span>
+            <span class="text-[10px] <%= t.name === currentTable ? 'text-stone-400' : 'text-stone-400' %> tabular"><%= t.count %></span>
+          </a>
+        </li>
+      <% }) %>
+    </ul>
+  </aside>
+
+  <!-- Conteúdo -->
+  <section class="card overflow-hidden">
+    <div class="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b divider">
+      <div>
+        <h3 class="font-serif text-xl font-semibold mono"><%= currentTable %></h3>
+        <p class="text-xs text-stone-500 mt-0.5 tabular"><%= total.toLocaleString('pt-BR') %> linhas · <%= columns.length %> colunas</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="get" class="flex items-center gap-2">
+          <input type="hidden" name="table" value="<%= currentTable %>">
+          <input type="text" name="q" value="<%= q || '' %>" placeholder="busca (LIKE em colunas TEXT)" class="rounded-lg bg-white border border-stone-300/80 px-3.5 py-2 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-bronze-500 focus:ring-2 focus:ring-bronze-500/20 w-64 mono">
+          <button type="submit" class="rounded-lg btn-primary px-3 py-2 text-xs font-medium inline-flex items-center gap-1.5">
+            <i data-lucide="search" class="!w-3 !h-3"></i> Buscar
+          </button>
+        </form>
+        <a href="/data/export.csv?table=<%= currentTable %><%= q ? '&q=' + encodeURIComponent(q) : '' %>" class="rounded-lg btn-ghost px-3 py-2 text-xs inline-flex items-center gap-1.5" title="Exportar CSV">
+          <i data-lucide="download" class="!w-3 !h-3"></i> CSV
+        </a>
+      </div>
+    </div>
+
+    <div class="overflow-x-auto scroll-y max-h-[70vh]">
+      <table class="w-full text-sm">
+        <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500 sticky top-0 bg-white z-10">
+          <tr class="border-b divider">
+            <% columns.forEach(c => { %>
+              <th class="text-left font-semibold px-4 py-2.5 mono whitespace-nowrap"><%= c.name %><span class="text-stone-300 ml-1.5">·<%= c.type %></span></th>
+            <% }) %>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (rows.length === 0) { %>
+            <tr><td colspan="<%= columns.length %>" class="px-4 py-10 text-center text-stone-500">Sem linhas pra esse filtro.</td></tr>
+          <% } %>
+          <% rows.forEach(row => { %>
+            <tr class="border-b divider last:border-0 hover:bg-stone-50 align-top">
+              <% columns.forEach(c => {
+                let v = row[c.name];
+                let display = '';
+                if (v === null || v === undefined) {
+                  display = '<span class="text-stone-300 italic">null</span>';
+                } else if (typeof v === 'object') {
+                  const json = JSON.stringify(v);
+                  display = `<code class="mono text-xs text-bronze-600">${json.length > 80 ? json.slice(0,80)+'…' : json}</code>`;
+                } else if (typeof v === 'boolean') {
+                  display = v ? '<span class="text-sage-700">true</span>' : '<span class="text-terra-700">false</span>';
+                } else if (v instanceof Date) {
+                  display = v.toLocaleString('pt-BR');
+                } else {
+                  const s = String(v);
+                  display = s.length > 100 ? s.slice(0,100)+'…' : s;
+                }
+              %>
+                <td class="px-4 py-2 text-stone-700 whitespace-nowrap max-w-[300px] overflow-hidden text-ellipsis tabular" title="<%= typeof row[c.name] === 'object' ? JSON.stringify(row[c.name]) : (row[c.name] == null ? '' : String(row[c.name])) %>"><%- display %></td>
+              <% }) %>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+
+    <% if (pagination.total > pagination.perPage) { %>
+      <div class="flex items-center justify-between px-6 py-3 border-t divider text-xs text-stone-500">
+        <span>Página <%= pagination.page %> de <%= pagination.totalPages %></span>
+        <div class="flex gap-1.5">
+          <% if (pagination.page > 1) { %>
+            <a href="?<%= pagination.qs %>&page=<%= pagination.page - 1 %>" class="rounded-md btn-ghost px-3 py-1.5">‹ anterior</a>
+          <% } %>
+          <% if (pagination.page < pagination.totalPages) { %>
+            <a href="?<%= pagination.qs %>&page=<%= pagination.page + 1 %>" class="rounded-md btn-ghost px-3 py-1.5">próxima ›</a>
+          <% } %>
+        </div>
+      </div>
+    <% } %>
+  </section>
+</div>
+
+<%- include('_footer') %>

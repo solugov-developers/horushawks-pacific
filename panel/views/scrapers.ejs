@@ -1,0 +1,93 @@
+<%- include('_header', { eyebrow: 'Atelier', title: 'Robôs', subtitle: scrapers.length + ' cadastrados', currentPath: '/scrapers' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—'; } %>
+<% function statusBadge(status) {
+  if (!status) return '<span class="text-stone-400 text-xs">—</span>';
+  const map = { done: 'b-done', failed: 'b-failed', running: 'b-running', queued: 'b-queued' };
+  return `<span class="badge ${map[status] || 'b-muted'}">${status}</span>`;
+} %>
+
+<div class="flex items-center justify-between mb-5">
+  <p class="text-sm text-stone-500">Configure scrapers, agende e dispare manualmente.</p>
+  <a href="/scrapers/new" class="inline-flex items-center gap-2 rounded-lg btn-primary px-4 py-2.5 text-sm font-medium">
+    <i data-lucide="plus" class="!w-4 !h-4"></i> Novo robô
+  </a>
+</div>
+
+<% if (scrapers.length === 0) { %>
+  <div class="card p-12 text-center">
+    <div class="inline-flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-bronze-600 mb-3">
+      <i data-lucide="cpu" class="!w-6 !h-6"></i>
+    </div>
+    <p class="font-serif text-2xl font-semibold">Comece seu primeiro robô</p>
+    <p class="text-stone-500 text-sm mt-1.5 max-w-md mx-auto">Defina URL, agendamento e ações JSON. O motor cuida do resto.</p>
+    <a href="/scrapers/new" class="mt-5 inline-flex items-center gap-2 rounded-lg btn-primary px-4 py-2.5 text-sm font-medium">
+      <i data-lucide="plus" class="!w-4 !h-4"></i> Criar robô
+    </a>
+  </div>
+<% } else { %>
+  <div class="card overflow-hidden">
+    <div class="overflow-x-auto scroll-y">
+      <table class="w-full text-sm">
+        <thead class="text-[10px] uppercase tracking-[0.14em] text-stone-500">
+          <tr class="border-b divider">
+            <th class="text-left font-semibold px-6 py-3.5">Nome</th>
+            <th class="text-left font-semibold px-6 py-3.5">Cron</th>
+            <th class="text-left font-semibold px-6 py-3.5">Último status</th>
+            <th class="text-left font-semibold px-6 py-3.5">Última execução</th>
+            <th class="text-right font-semibold px-6 py-3.5">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% scrapers.forEach(s => { %>
+            <tr class="border-b divider last:border-0 hover:bg-stone-50">
+              <td class="px-6 py-4">
+                <div class="flex items-center gap-3">
+                  <div class="relative h-9 w-9 rounded-xl overflow-hidden veining ring-1 ring-stone-300/60 grain flex items-center justify-center font-serif font-semibold text-bronze-600 text-sm shrink-0">
+                    <%= (s.name[0] || 'R').toUpperCase() %>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <a href="/scrapers/<%= s.id %>/results" class="font-medium text-stone-900 hover:text-bronze-700"><%= s.name %></a>
+                      <% if (!s.enabled) { %>
+                        <span class="badge b-muted">desativado</span>
+                      <% } %>
+                    </div>
+                    <% if (s.description) { %>
+                      <div class="text-xs text-stone-500 truncate max-w-md mt-0.5"><%= s.description %></div>
+                    <% } %>
+                  </div>
+                </div>
+              </td>
+              <td class="px-6 py-4"><code class="text-xs text-stone-600 mono"><%= s.schedule || '—' %></code></td>
+              <td class="px-6 py-4"><%- statusBadge(s.last_status) %></td>
+              <td class="px-6 py-4 text-stone-500 text-xs tabular"><%= fmtDate(s.last_run) %></td>
+              <td class="px-6 py-4 text-right">
+                <div class="flex items-center justify-end gap-1.5">
+                  <form action="/scrapers/<%= s.id %>/run" method="post" class="inline">
+                    <button type="submit" class="inline-flex items-center gap-1 rounded-md btn-accent px-3 py-1.5 text-xs font-medium" title="Rodar agora">
+                      <i data-lucide="play" class="!w-3 !h-3"></i> Rodar
+                    </button>
+                  </form>
+                  <a href="/scrapers/<%= s.id %>/results" class="inline-flex items-center gap-1 rounded-md btn-ghost px-3 py-1.5 text-xs">
+                    <i data-lucide="bar-chart-3" class="!w-3 !h-3"></i> Resultados
+                  </a>
+                  <a href="/scrapers/<%= s.id %>/edit" class="inline-flex items-center justify-center rounded-md btn-ghost h-7 w-7" title="Editar">
+                    <i data-lucide="pencil" class="!w-3 !h-3"></i>
+                  </a>
+                  <form action="/scrapers/<%= s.id %>/delete" method="post" class="inline" onsubmit="return confirm('Excluir <%= s.name %>?')">
+                    <button type="submit" class="inline-flex items-center justify-center rounded-md border border-terra-500/30 bg-terra-50 text-terra-700 hover:bg-terra-500/15 h-7 w-7" title="Excluir">
+                      <i data-lucide="trash-2" class="!w-3 !h-3"></i>
+                    </button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+<% } %>
+
+<%- include('_footer') %>

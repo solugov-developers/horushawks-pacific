@@ -1,0 +1,320 @@
+<%- include('_header', { eyebrow: 'Relatório Executivo · OPR', title: 'Atelier do dia', subtitle: 'Uma página, um pulso, uma decisão.', currentPath: '/' }) %>
+
+<% function fmtDate(d) { return d ? new Date(d).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—'; } %>
+<% function fmtNum(n) { return (n||0).toLocaleString('pt-BR'); } %>
+<% function statusBadge(s) {
+  if (!s) return '<span class="text-stone-400 text-xs">—</span>';
+  const map = { done: 'b-done', failed: 'b-failed', running: 'b-running', queued: 'b-queued' };
+  return `<span class="badge ${map[s] || 'b-muted'}">${s}</span>`;
+} %>
+<% function spark(values, w=72, h=22) {
+  if (!values || !values.length) return '';
+  const max = Math.max(1, ...values);
+  const step = w / (values.length - 1 || 1);
+  const pts = values.map((v, i) => `${(i*step).toFixed(1)},${(h - (v/max)*h).toFixed(1)}`).join(' ');
+  const fillPts = `0,${h} ${pts} ${w},${h}`;
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="overflow-visible">
+    <polygon points="${fillPts}" fill="rgba(184,112,46,0.10)"/>
+    <polyline points="${pts}" fill="none" stroke="#94591E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+} %>
+
+<!-- ZONA 1 — HERO EDITORIAL -->
+<section class="relative card overflow-hidden mb-6 grain">
+  <div class="veining absolute inset-0"></div>
+  <div class="absolute inset-0 opacity-50"><%- veiningHero %></div>
+  <div class="relative grid grid-cols-1 md:grid-cols-12 gap-6 p-8 md:p-10">
+    <!-- Coluna esquerda: hero number + frase editorial 7 col -->
+    <div class="md:col-span-7">
+      <p class="text-[11px] uppercase tracking-[0.22em] text-bronze-600 font-medium mb-4">
+        ❦ <%= new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }) %>
+      </p>
+      <div class="flex items-baseline gap-3">
+        <span class="font-serif font-semibold text-[88px] leading-none tabular tracking-tight tickup"><%= fmtNum(kpis.totalSlabs) %></span>
+        <span class="font-editorial italic text-2xl text-stone-500">chapas</span>
+      </div>
+      <p class="font-editorial text-[19px] leading-snug text-stone-700 mt-5 max-w-2xl tickup tickup-2">
+        catalogadas em <span class="font-semibold text-stone-900"><%= kpis.activeScrapers %> robôs</span> ativos, atravessando seis fornecedores, da
+        <span class="italic">Calacatta</span> ao granito do interior do Texas.
+      </p>
+      <div class="mt-6 flex flex-wrap gap-2 tickup tickup-3">
+        <a href="/scrapers" class="inline-flex items-center gap-2 rounded-full btn-primary px-4 py-2 text-sm font-medium">
+          <i data-lucide="play"></i> Disparar coleta
+        </a>
+        <a href="/movements" class="inline-flex items-center gap-2 rounded-full btn-ghost px-4 py-2 text-sm font-medium">
+          <i data-lucide="git-compare"></i> Movimentação
+        </a>
+        <a href="/data" class="inline-flex items-center gap-2 rounded-full btn-ghost px-4 py-2 text-sm font-medium">
+          <i data-lucide="database"></i> Inventário SQL
+        </a>
+      </div>
+    </div>
+
+    <!-- Coluna direita: medalhão sucesso 5 col -->
+    <div class="md:col-span-5 flex flex-col justify-center">
+      <div class="grid grid-cols-2 gap-4">
+        <div class="card-soft p-4 tickup tickup-2">
+          <p class="text-[10px] uppercase tracking-[0.16em] text-stone-500 mb-1">Sucesso · 7 dias</p>
+          <p class="font-serif text-[32px] font-semibold leading-none tabular"><%= kpis.successRate %><span class="text-stone-400 text-base">%</span></p>
+          <p class="text-[11px] text-stone-500 mt-1.5"><%= kpis.jobsDone7d %> ok · <%= kpis.jobsFailed7d %> falhas</p>
+        </div>
+        <div class="card-soft p-4 tickup tickup-3">
+          <p class="text-[10px] uppercase tracking-[0.16em] text-stone-500 mb-1">Hoje · execuções</p>
+          <p class="font-serif text-[32px] font-semibold leading-none tabular"><%= kpis.jobs24h %></p>
+          <p class="text-[11px] text-stone-500 mt-1.5">
+            <% if (kpis.jobsRunning > 0) { %><span class="text-bronze-600">● <%= kpis.jobsRunning %> rodando</span><% } else { %>nenhum em curso<% } %>
+          </p>
+        </div>
+        <div class="card-soft p-4 tickup tickup-4">
+          <p class="text-[10px] uppercase tracking-[0.16em] text-stone-500 mb-1">Movimentação · 24h</p>
+          <div class="flex items-baseline gap-2">
+            <span class="font-serif text-[28px] font-semibold leading-none tabular text-sage-700">+<%= kpis.movements.added %></span>
+            <span class="font-serif text-[20px] font-semibold leading-none tabular text-terra-700">−<%= kpis.movements.removed %></span>
+          </div>
+          <p class="text-[11px] text-stone-500 mt-1.5"><%= kpis.movements.changed %> alterações</p>
+        </div>
+        <div class="card-soft p-4 tickup tickup-5">
+          <p class="text-[10px] uppercase tracking-[0.16em] text-stone-500 mb-1">Robôs ativos</p>
+          <p class="font-serif text-[32px] font-semibold leading-none tabular"><%= kpis.activeScrapers %></p>
+          <p class="text-[11px] text-stone-500 mt-1.5"><%= kpis.scheduledScrapers %> agendados</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ZONA 2 — PULSO DOS ROBÔS (mosaico 6 cards) -->
+<section class="mb-6">
+  <div class="ornament mb-4"><span class="font-editorial italic text-sm text-stone-500">Pulso dos robôs</span></div>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <% pulse.forEach((p, i) => { %>
+      <a href="/scrapers/<%= p.id %>/results" class="card p-4 reveal-on-hover hover:border-bronze-300 transition-colors">
+        <div class="flex items-start justify-between mb-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="relative h-9 w-9 rounded-xl overflow-hidden veining grain ring-1 ring-stone-300/60 flex items-center justify-center font-serif text-sm font-semibold text-bronze-600 shrink-0">
+              <%= (p.name[0] || 'R').toUpperCase() %>
+            </div>
+            <div class="min-w-0">
+              <div class="font-medium text-stone-900 truncate"><%= p.name %></div>
+              <div class="text-[11px] text-stone-500 tabular"><%= fmtNum(p.rowCount) %> chapas</div>
+            </div>
+          </div>
+          <%- statusBadge(p.last_status) %>
+        </div>
+        <div class="flex items-end justify-between">
+          <div>
+            <p class="text-[10px] uppercase tracking-[0.14em] text-stone-500 mb-0.5">Último run</p>
+            <p class="text-xs text-stone-700 tabular"><%= fmtDate(p.last_run) %></p>
+            <% if (p.last_duration != null) { %>
+              <p class="text-[11px] text-stone-500 tabular mt-0.5"><%= p.last_duration %>s</p>
+            <% } %>
+          </div>
+          <div class="reveal">
+            <%- spark(p.spark) %>
+          </div>
+        </div>
+      </a>
+    <% }) %>
+  </div>
+</section>
+
+<!-- ZONA 3 — INVENTÁRIO EM MOVIMENTO (3 colunas: top materiais / top categorias / locais) -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-4 mb-6">
+  <!-- Top materiais -->
+  <div class="card p-6 lg:col-span-5">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-serif text-xl font-semibold">Top materiais</h3>
+      <span class="text-[10px] uppercase tracking-[0.14em] text-stone-500">por linhas</span>
+    </div>
+    <% if (!topMaterials.length) { %>
+      <p class="text-sm text-stone-500 py-6 text-center">sem dados</p>
+    <% } else {
+      const maxN = Math.max(...topMaterials.map(m => parseInt(m.n, 10)));
+    %>
+      <ul class="space-y-3">
+        <% topMaterials.forEach((m, i) => {
+          const n = parseInt(m.n, 10); const pct = (n/maxN*100).toFixed(0);
+        %>
+          <li>
+            <div class="flex items-baseline justify-between gap-3 mb-1">
+              <span class="font-editorial text-[15px] text-stone-800 truncate"><%= m.item_name %></span>
+              <span class="font-serif font-semibold tabular text-stone-900 shrink-0"><%= fmtNum(n) %></span>
+            </div>
+            <div class="h-1 rounded-full bg-stone-200 overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-bronze-500 to-bronze-300" style="width: <%= pct %>%"></div>
+            </div>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+
+  <!-- Top categorias -->
+  <div class="card p-6 lg:col-span-3">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-serif text-xl font-semibold">Categorias</h3>
+      <span class="text-[10px] uppercase tracking-[0.14em] text-stone-500">share</span>
+    </div>
+    <% if (!topCategories.length) { %>
+      <p class="text-sm text-stone-500 py-6 text-center">sem dados</p>
+    <% } else {
+      const totalCat = topCategories.reduce((s, c) => s + parseInt(c.n, 10), 0) || 1;
+    %>
+      <ul class="space-y-2.5">
+        <% topCategories.forEach((c, i) => {
+          const n = parseInt(c.n, 10); const pct = (n/totalCat*100).toFixed(1);
+        %>
+          <li class="flex items-center justify-between text-sm gap-3">
+            <span class="flex items-center gap-2 min-w-0">
+              <span class="h-2 w-2 rounded-sm shrink-0" style="background: <%= ['#94591E','#C28D52','#D4A767','#E5C796','#5A6B4D','#8C8270'][i] %>"></span>
+              <span class="truncate text-stone-700"><%= c.category_name %></span>
+            </span>
+            <span class="text-stone-900 font-medium tabular"><%= pct %>%</span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+
+  <!-- Locais (donut) -->
+  <div class="card p-6 lg:col-span-4">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="font-serif text-xl font-semibold">Locais</h3>
+      <span class="text-[10px] uppercase tracking-[0.14em] text-stone-500">distribuição</span>
+    </div>
+    <% if (!locDist.values.length) { %>
+      <p class="text-sm text-stone-500 py-6 text-center">sem dados</p>
+    <% } else { %>
+      <div class="relative h-40 mt-2"><canvas id="locChart"></canvas>
+        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <p class="text-[10px] uppercase tracking-[0.14em] text-stone-500">total</p>
+          <p class="font-serif text-2xl font-semibold tabular leading-none"><%= fmtNum(locDist.values.reduce((s,v)=>s+v,0)) %></p>
+        </div>
+      </div>
+      <ul class="mt-4 grid grid-cols-2 gap-x-3 gap-y-1.5">
+        <% locDist.labels.forEach((label, i) => { %>
+          <li class="flex items-center justify-between text-[12px]">
+            <span class="flex items-center gap-1.5 min-w-0">
+              <span class="h-1.5 w-1.5 rounded-full shrink-0" style="background: <%= ['#94591E','#C28D52','#D4A767','#E5C796','#5A6B4D','#8C8270'][i] %>"></span>
+              <span class="truncate text-stone-700"><%= label %></span>
+            </span>
+            <span class="text-stone-900 font-medium tabular"><%= fmtNum(locDist.values[i]) %></span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+</section>
+
+<!-- ZONA 4 — MOVIMENTAÇÃO recente + PRÓXIMAS execuções -->
+<section class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+  <!-- Movimentação -->
+  <div class="card overflow-hidden lg:col-span-7">
+    <div class="flex items-center justify-between px-6 py-4 border-b divider">
+      <div>
+        <h3 class="font-serif text-xl font-semibold">Movimentação recente</h3>
+        <p class="text-xs text-stone-500 mt-0.5">chapas novas, esgotadas e alteradas — últimos 7 dias</p>
+      </div>
+      <a href="/movements" class="text-xs text-bronze-600 hover:text-bronze-700 inline-flex items-center gap-1 font-medium">ver tudo <i data-lucide="arrow-right" class="!w-3 !h-3"></i></a>
+    </div>
+    <ul class="divide-y divider">
+      <% if (!recentMovs.length) { %>
+        <li class="px-6 py-10 text-center text-sm text-stone-500">Sem movimentação ainda. Re-rode os robôs para gerar diffs.</li>
+      <% } %>
+      <% recentMovs.forEach(m => {
+        const kindCfg = {
+          added:         { icon: 'plus-circle',  color: 'text-sage-700',  prefix: 'novo'      },
+          removed:       { icon: 'minus-circle', color: 'text-terra-700', prefix: 'esgotado'  },
+          price_changed: { icon: 'dollar-sign',  color: 'text-bronze-600',prefix: 'preço'     },
+          qty_changed:   { icon: 'package',      color: 'text-bronze-600',prefix: 'quantidade'},
+        }[m.kind] || { icon: 'circle', color: 'text-stone-500', prefix: m.kind };
+      %>
+        <li class="px-6 py-3 flex items-start gap-3">
+          <i data-lucide="<%= kindCfg.icon %>" class="<%= kindCfg.color %> mt-0.5"></i>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-stone-900 truncate"><%= m.item_name || '(sem nome)' %></p>
+            <p class="text-[11px] text-stone-500">
+              <span class="<%= kindCfg.color %>"><%= kindCfg.prefix %></span>
+              <% if (m.prev_value || m.next_value) { %>
+                · <code class="mono text-stone-600"><%= m.prev_value || '—' %> → <%= m.next_value || '—' %></code>
+              <% } %>
+              · <a href="/scrapers/<%= m.scraper_id %>/results" class="text-stone-600 hover:text-bronze-700"><%= m.scraper_name %></a>
+            </p>
+          </div>
+          <span class="text-[11px] text-stone-400 tabular shrink-0"><%= fmtDate(m.detected_at) %></span>
+        </li>
+      <% }) %>
+    </ul>
+  </div>
+
+  <!-- Próximas execuções (timeline) -->
+  <div class="card p-6 lg:col-span-5">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h3 class="font-serif text-xl font-semibold">Próximas execuções</h3>
+        <p class="text-xs text-stone-500 mt-0.5">agendadas via cron</p>
+      </div>
+      <i data-lucide="clock" class="text-stone-400"></i>
+    </div>
+    <% if (!upcoming.length) { %>
+      <div class="text-center py-8">
+        <i data-lucide="calendar-x" class="!w-7 !h-7 text-stone-300 mx-auto"></i>
+        <p class="text-sm text-stone-500 mt-2">Nenhum robô agendado.</p>
+        <a href="/scrapers" class="text-xs text-bronze-600 hover:text-bronze-700 mt-1 inline-block">configurar cron →</a>
+      </div>
+    <% } else { %>
+      <ul class="space-y-3">
+        <% upcoming.forEach(u => { %>
+          <li class="flex items-center gap-3">
+            <div class="h-8 w-8 rounded-full bg-stone-100 flex items-center justify-center text-[10px] uppercase tracking-wider text-bronze-600 font-semibold shrink-0">
+              <%= u.nextLabel %>
+            </div>
+            <div class="flex-1 min-w-0">
+              <a href="/scrapers/<%= u.id %>/results" class="text-stone-900 hover:text-bronze-700 truncate font-medium block"><%= u.name %></a>
+              <code class="text-[11px] mono text-stone-500"><%= u.schedule %></code>
+            </div>
+            <span class="text-[11px] text-stone-500 tabular shrink-0"><%= u.nextDate %></span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+  Chart.defaults.color = '#6B6354';
+
+  const locLabels = <%- JSON.stringify(locDist.labels) %>;
+  const locValues = <%- JSON.stringify(locDist.values) %>;
+  if (locValues.length) {
+    new Chart(document.getElementById('locChart').getContext('2d'), {
+      type: 'doughnut',
+      data: {
+        labels: locLabels,
+        datasets: [{
+          data: locValues,
+          backgroundColor: ['#94591E','#C28D52','#D4A767','#E5C796','#5A6B4D','#8C8270'],
+          borderColor: '#FFFFFF',
+          borderWidth: 2,
+          hoverOffset: 6,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '70%',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#FBF8F2', borderColor: '#DCD0BA', borderWidth: 1, padding: 10,
+            titleColor: '#1C1A17', bodyColor: '#4A4338',
+          },
+        },
+      },
+    });
+  }
+</script>
+
+<%- include('_footer') %>

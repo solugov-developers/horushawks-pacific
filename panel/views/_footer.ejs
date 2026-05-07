@@ -1,0 +1,45 @@
+      </main>
+    </div>
+  </div>
+
+  <!-- Spotlight ⌘K -->
+  <div id="spotlight" class="hidden fixed inset-0 z-50 bg-stone-900/40 backdrop-blur-sm" onclick="if(event.target===this)closeSpotlight()">
+    <div class="max-w-2xl mx-auto mt-[12vh] card overflow-hidden shadow-2xl">
+      <div class="flex items-center gap-3 px-4 py-3 border-b divider">
+        <i data-lucide="search" class="text-stone-500"></i>
+        <input id="spotlight-input" type="text" autocomplete="off" placeholder="Buscar robôs, jobs, chapas, materiais…"
+          hx-get="/spotlight" hx-trigger="keyup changed delay:200ms" hx-target="#spotlight-results" hx-swap="innerHTML"
+          name="q" class="flex-1 bg-transparent text-base focus:outline-none placeholder-stone-400">
+        <span class="kbd">esc</span>
+      </div>
+      <div id="spotlight-results" class="max-h-[60vh] overflow-y-auto scroll-y">
+        <div class="p-8 text-center text-sm text-stone-500">
+          Comece a digitar pra buscar.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    lucide.createIcons();
+
+    function openSpotlight() {
+      document.getElementById('spotlight').classList.remove('hidden');
+      setTimeout(() => document.getElementById('spotlight-input').focus(), 30);
+    }
+    function closeSpotlight() {
+      document.getElementById('spotlight').classList.add('hidden');
+    }
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); openSpotlight();
+      } else if (e.key === 'Escape') {
+        closeSpotlight();
+      }
+    });
+    // re-render lucide icons após swaps HTMX
+    document.body.addEventListener('htmx:afterSwap', () => lucide.createIcons());
+  </script>
+</body>
+</html>
