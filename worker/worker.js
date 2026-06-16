@@ -24,6 +24,33 @@ function getPath(obj, path) {
   return v;
 }
 
+// Status flags chegam de fornecedores em formatos variados:
+//   true / false / "true" / "false" / 1 / 0 / "1" / "0" / "Y" / "N" / "Yes" / "No"
+//   ou strings de status como "OnHold", "InStock", "Reserved", "On SO", "In transit"
+// Para colunas BOOLEAN (on_hold, on_so, in_transit), tentamos coercionar.
+// Retorna true / false / null (desconhecido).
+const TRUE_KEYWORDS  = new Set(['true','t','yes','y','1','on','onhold','hold','reserved','onso','intransit','transit']);
+const FALSE_KEYWORDS = new Set(['false','f','no','n','0','off','instock','available']);
+
+const BOOL_COLUMNS = new Set(['on_hold', 'on_so', 'in_transit']);
+
+function coerceBool(v) {
+  if (v === true || v === false) return v;
+  if (v == null) return null;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const k = v.trim().toLowerCase();
+    if (k === '' || k === 'null' || k === 'undefined') return null;
+    if (TRUE_KEYWORDS.has(k))  return true;
+    if (FALSE_KEYWORDS.has(k)) return false;
+    // Heuristic: any string containing "hold" / "transit" / "reserve" → true
+    if (/hold|transit|reserve|onso/i.test(k)) return true;
+    if (/in.?stock|available|free/i.test(k))  return false;
+    return null;
+  }
+  return null;
+}
+
 function collectSaveRows(actions, acc = []) {
   if (!Array.isArray(actions)) return acc;
   for (const a of actions) {
@@ -34,13 +61,24 @@ function collectSaveRows(actions, acc = []) {
   return acc;
 }
 
-function pickRowValues(row, colMap) {
+function pickRowValues(row, colMap, constants) {
   const out = {};
   const usedTops = new Set();
   for (const [dbCol, srcPath] of Object.entries(colMap)) {
     usedTops.add(String(srcPath).split('.')[0]);
     const v = getPath(row, srcPath);
-    out[dbCol] = v === undefined ? null : v;
+    let resolved = v === undefined ? null : v;
+    if (BOOL_COLUMNS.has(dbCol)) {
+      resolved = coerceBool(resolved);
+    }
+    out[dbCol] = resolved;
+  }
+  // Constantes do save_rows: aplica DEPOIS do mapping, sobrescreve se conflito.
+  // Útil pra fornecedores que não trazem o campo na resposta (ex: location, available_slabs default).
+  if (constants && typeof constants === 'object') {
+    for (const [dbCol, val] of Object.entries(constants)) {
+      out[dbCol] = val;
+    }
   }
   return { values: out, usedTops };
 }
@@ -69,7 +107,7 @@ async function persistSaveRows(client, action, state, ctx) {
   const colList = allCols.map(quoteIdent).join(', ');
 
   // Snapshots: colunas conhecidas
-  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range','payload'];
+  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit','payload'];
 
   const BATCH = 500;
   let inserted = 0;
@@ -82,7 +120,7 @@ async function persistSaveRows(client, action, state, ctx) {
     const snapValuesSql = [];
 
     for (const row of slice) {
-      const { values: vals, usedTops } = pickRowValues(row, colMap);
+      const { values: vals, usedTops } = pickRowValues(row, colMap, action.constants);
 
       // INSERT na tabela do fornecedor
       const placeholders = [];
@@ -107,7 +145,7 @@ async function persistSaveRows(client, action, state, ctx) {
         snapParams.push(ctx.scraperId); sp.push(`$${snapParams.length}`);
         snapParams.push(ctx.jobId);     sp.push(`$${snapParams.length}`);
         snapParams.push(sourceKey);     sp.push(`$${snapParams.length}`);
-        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range']) {
+        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit']) {
           snapParams.push(vals[k] === undefined ? null : vals[k]);
           sp.push(`$${snapParams.length}`);
         }
@@ -140,16 +178,16 @@ async function computeMovements(client, ctx) {
   );
   if (!prevRows.length) {
     console.log(`[worker] movements: sem job anterior, pulando`);
-    return { added: 0, removed: 0, changed: 0 };
+    return { added: 0, removed: 0, changed: 0, transferred: 0, held: 0, released: 0 };
   }
   const prevJobId = prevRows[0].id;
 
   const sql = `
     WITH cur AS (
-      SELECT source_key, item_name, price, available_qty
+      SELECT source_key, item_name, price, available_qty, location, on_hold
       FROM slabs_history WHERE scraper_id = $1 AND job_id = $2
     ), prev AS (
-      SELECT source_key, item_name, price, available_qty
+      SELECT source_key, item_name, price, available_qty, location, on_hold
       FROM slabs_history WHERE scraper_id = $1 AND job_id = $3
     ),
     added AS (
@@ -172,6 +210,26 @@ async function computeMovements(client, ctx) {
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.available_qty IS DISTINCT FROM p.available_qty
     ),
+    location_changed AS (
+      SELECT c.source_key, c.item_name, p.location AS prev_loc, c.location AS next_loc
+      FROM cur c JOIN prev p ON p.source_key = c.source_key
+      WHERE c.location IS DISTINCT FROM p.location
+        AND p.location IS NOT NULL
+        AND c.location IS NOT NULL
+    ),
+    held AS (
+      SELECT c.source_key, c.item_name, p.on_hold AS prev_h, c.on_hold AS next_h
+      FROM cur c JOIN prev p ON p.source_key = c.source_key
+      WHERE c.on_hold IS DISTINCT FROM p.on_hold
+        AND c.on_hold IS TRUE
+    ),
+    released AS (
+      SELECT c.source_key, c.item_name, p.on_hold AS prev_h, c.on_hold AS next_h
+      FROM cur c JOIN prev p ON p.source_key = c.source_key
+      WHERE c.on_hold IS DISTINCT FROM p.on_hold
+        AND (c.on_hold IS FALSE OR c.on_hold IS NULL)
+        AND p.on_hold IS TRUE
+    ),
     ins_a AS (
       INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name)
       SELECT $1, $2, $3, source_key, 'added', item_name FROM added RETURNING 1
@@ -187,17 +245,36 @@ async function computeMovements(client, ctx) {
     ins_q AS (
       INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
       SELECT $1, $2, $3, source_key, 'qty_changed', item_name, prev_q::text, next_q::text FROM qty_changed RETURNING 1
+    ),
+    ins_t AS (
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'transferred', item_name, prev_loc, next_loc FROM location_changed RETURNING 1
+    ),
+    ins_h AS (
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'held', item_name, prev_h::text, next_h::text FROM held RETURNING 1
+    ),
+    ins_rel AS (
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'released', item_name, prev_h::text, next_h::text FROM released RETURNING 1
     )
     SELECT
-      (SELECT count(*) FROM added) AS added,
-      (SELECT count(*) FROM removed) AS removed,
-      (SELECT count(*) FROM price_changed) + (SELECT count(*) FROM qty_changed) AS changed`;
+      (SELECT count(*) FROM added)             AS added,
+      (SELECT count(*) FROM removed)           AS removed,
+      (SELECT count(*) FROM price_changed)
+        + (SELECT count(*) FROM qty_changed)   AS changed,
+      (SELECT count(*) FROM location_changed)  AS transferred,
+      (SELECT count(*) FROM held)              AS held,
+      (SELECT count(*) FROM released)          AS released`;
   const { rows } = await client.query(sql, [ctx.scraperId, ctx.jobId, prevJobId]);
   const r = rows[0];
   return {
-    added: parseInt(r.added, 10),
-    removed: parseInt(r.removed, 10),
-    changed: parseInt(r.changed, 10),
+    added:       parseInt(r.added, 10),
+    removed:     parseInt(r.removed, 10),
+    changed:     parseInt(r.changed, 10),
+    transferred: parseInt(r.transferred, 10),
+    held:        parseInt(r.held, 10),
+    released:    parseInt(r.released, 10),
   };
 }
 
@@ -278,7 +355,7 @@ async function processJob(job) {
 
     const client = await db.connect();
     let totals = { inserted: 0, snapshots: 0 };
-    let movements = { added: 0, removed: 0, changed: 0 };
+    let movements = { added: 0, removed: 0, changed: 0, transferred: 0, held: 0, released: 0 };
     try {
       await client.query('BEGIN');
 
@@ -308,9 +385,12 @@ async function processJob(job) {
       await client.query(
         `UPDATE jobs SET status='done', finished_at=now(),
             rows_inserted=$2,
-            movements_added=$3, movements_removed=$4, movements_changed=$5
+            movements_added=$3, movements_removed=$4, movements_changed=$5,
+            movements_transferred=$6, movements_held=$7, movements_released=$8
           WHERE id=$1`,
-        [jobId, totals.inserted, movements.added, movements.removed, movements.changed]
+        [jobId, totals.inserted,
+         movements.added, movements.removed, movements.changed,
+         movements.transferred, movements.held, movements.released]
       );
       await client.query('COMMIT');
     } catch (err) {
@@ -339,11 +419,66 @@ async function processJob(job) {
   }
 }
 
+/**
+ * Reaper: marca como failed jobs que ficaram em 'running' por mais de 2h.
+ * Roda no boot e a cada 30 min. Cobre worker crash, OOM, daemon Docker matar.
+ */
+async function reapOrphanJobs() {
+  try {
+    const { rowCount } = await db.query(`
+      UPDATE jobs SET
+        status = 'failed',
+        finished_at = now(),
+        error = coalesce(error, 'reaper: marked failed after running > 2h (worker crash?)')
+      WHERE status IN ('running', 'queued')
+        AND coalesce(started_at, created_at) < now() - interval '2 hours'
+    `);
+    if (rowCount > 0) console.log(`[worker] reaper: ${rowCount} jobs órfãos marcados como failed`);
+  } catch (e) {
+    console.warn('[worker] reaper falhou:', e.message);
+  }
+}
+reapOrphanJobs();
+setInterval(reapOrphanJobs, 30 * 60 * 1000);
+
 const worker = new Worker('scrape', processJob, {
   connection,
   concurrency: parseInt(process.env.WORKER_CONCURRENCY || '2', 10),
+  // Resiliência: tentativas + backoff exponencial
+  defaultJobOptions: {
+    attempts: parseInt(process.env.JOB_ATTEMPTS || '3', 10),
+    backoff: {
+      type: 'exponential',
+      delay: 30_000, // 30s, depois 60s, depois 120s
+    },
+    // Limpeza de jobs antigos da fila (logs do BullMQ)
+    removeOnComplete: { age: 7 * 24 * 3600, count: 1000 },
+    removeOnFail:     { age: 30 * 24 * 3600, count: 5000 },
+  },
 });
 
 worker.on('error', (err) => console.error('[worker] erro:', err));
+worker.on('failed', (job, err) => {
+  if (job) {
+    console.error(`[worker] job ${job.id} (data.jobId=${job.data?.jobId}) falhou tentativa ${job.attemptsMade}/${job.opts.attempts}:`, err.message);
+  }
+});
+worker.on('completed', (job) => {
+  console.log(`[worker] BullMQ job ${job.id} (data.jobId=${job.data?.jobId}) completed`);
+});
+
+// Graceful shutdown — fecha worker antes do SIGTERM matar o container.
+async function shutdown(signal) {
+  console.log(`[worker] recebido ${signal}, fechando...`);
+  try {
+    await worker.close();
+    await db.query('SELECT 1'); // flush
+  } catch (e) {
+    console.error('[worker] shutdown error:', e.message);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 console.log('[worker] aguardando jobs...');

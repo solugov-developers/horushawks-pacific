@@ -1,6 +1,9 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const { chromium, request: pwRequest } = require('playwright');
+const { request: pwRequest } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin());
 const { Pool } = require('pg');
 
 const app = express();
@@ -28,7 +31,8 @@ async function updateProgress(jobId, fields) {
 }
 
 const BROWSER_ACTIONS = new Set([
-  'wait_for_selector', 'click', 'type', 'extract_text', 'extract_html', 'screenshot'
+  'wait_for_selector', 'click', 'type', 'extract_text', 'extract_html', 'screenshot',
+  'browser_get_json'
 ]);
 
 function getPath(obj, path) {
@@ -70,7 +74,7 @@ function hasBrowserActions(actions) {
   for (const a of actions) {
     if (!a || typeof a !== 'object') continue;
     if (BROWSER_ACTIONS.has(a.type)) return true;
-    if (a.type === 'loop' && hasBrowserActions(a.actions)) return true;
+    if ((a.type === 'loop' || a.type === 'paginate_until') && hasBrowserActions(a.actions)) return true;
   }
   return false;
 }
@@ -84,7 +88,11 @@ async function ensureBrowser(runCtx, url) {
   runCtx.page = await runCtx.browser.newPage();
   if (url) {
     console.log('[SCRAPER] Acessando:', url);
-    await runCtx.page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    // domcontentloaded é mais rápido e não trava em páginas com JS polling
+    // contínuo (ex: Cloudflare challenge). networkidle 'idle' opcional como
+    // best-effort com timeout curto.
+    await runCtx.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await runCtx.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
   }
   return runCtx.page;
 }
@@ -187,7 +195,8 @@ async function runActions(actions, ctx, runCtx) {
           ? (Array.isArray(ctx.state[action.current_count_in]) ? ctx.state[action.current_count_in].length : 0)
           : i;
         if (targetCount && currentCount >= targetCount) break;
-        ctx.vars[action.page_var || 'page'] = String(i);
+        const pageOffset = action.page_offset != null ? Number(action.page_offset) : 0;
+        ctx.vars[action.page_var || 'page'] = String(i + pageOffset);
         await runActions(action.actions || [], ctx, runCtx);
         i++;
         if (action.stop_when_empty && action.current_count_in) {
@@ -285,6 +294,50 @@ async function runActions(actions, ctx, runCtx) {
 
     if (action.type === 'set_var') {
       ctx.vars[action.name] = render(action.value, ctx);
+      continue;
+    }
+
+    if (action.type === 'browser_get_json') {
+      // Navega via browser real (Playwright + Chromium). Para sites atrás de
+      // Cloudflare interactive challenge, navegar DIRETO no URL JSON e aguardar
+      // o browser renderizar o JSON em <pre> (Chrome faz isso nativamente para
+      // application/json). O Cloudflare libera após executar o JS challenge.
+      const url = render(action.url, ctx);
+      const page = await ensureBrowser(runCtx, runCtx.initialUrl);
+      console.log(`[SCRAPER] browser_get_json:`, url.slice(0, 120));
+
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+      const maxWaitMs = action.wait_ms || 45000;
+      try {
+        await page.waitForFunction(() => {
+          const pre = document.querySelector('pre');
+          if (!pre) return false;
+          const t = (pre.textContent || '').trim();
+          return t.length > 0 && (t[0] === '[' || t[0] === '{');
+        }, { timeout: maxWaitMs });
+      } catch (e) {
+        // Captura snapshot para debug
+        const title = await page.title().catch(() => '?');
+        const head = (await page.locator('body').innerText().catch(() => '')).slice(0, 200);
+        throw new Error(`browser_get_json ${url} timeout aguardando JSON. title="${title}" body="${head}"`);
+      }
+
+      const txt = (await page.locator('pre').first().innerText()).trim();
+      let data;
+      try { data = JSON.parse(txt); }
+      catch (e) {
+        throw new Error(`browser_get_json ${url} JSON inválido: ${txt.slice(0, 200)}`);
+      }
+      if (action.save_as) ctx.state[action.save_as] = data;
+      if (action.append_to) {
+        const target = ctx.state[action.append_to];
+        if (Array.isArray(target)) {
+          if (Array.isArray(data)) target.push(...data); else target.push(data);
+        } else {
+          ctx.state[action.append_to] = Array.isArray(data) ? [...data] : [data];
+        }
+      }
       continue;
     }
 
