@@ -93,6 +93,48 @@ export async function getTopCategories(opts: BaseOpts & { limit?: number } = {})
   return r.rows.map(row => ({ category: String(row.category), slabs: Number(row.slabs) }));
 }
 
+export interface CategoriesBreakdown {
+  top: CategoryRow[];
+  others: { slabs: number; count: number };
+  totalDistinct: number;
+  totalSlabs: number;
+}
+
+/**
+ * Retorna as top-N categorias + resto agregado como "Others" +
+ * total real de categorias distintas (pra usar no centro do donut).
+ */
+export async function getCategoriesBreakdown(
+  opts: BaseOpts & { topN?: number } = {},
+): Promise<CategoriesBreakdown> {
+  const topN = opts.topN ?? 10;
+  const cte = latestJobsCte(opts.source);
+  const r = await db.execute(sql`
+    WITH latest AS (${cte}),
+    per_cat AS (
+      SELECT sh.category_name AS category, count(*)::int AS slabs
+      FROM slabs_history sh
+      JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+      WHERE sh.category_name IS NOT NULL AND sh.category_name <> ''
+      GROUP BY 1
+    )
+    SELECT category, slabs FROM per_cat ORDER BY slabs DESC
+  `);
+  const all = r.rows.map((row) => ({
+    category: String(row.category),
+    slabs: Number(row.slabs),
+  }));
+  const totalSlabs = all.reduce((s, x) => s + x.slabs, 0);
+  const top = all.slice(0, topN);
+  const rest = all.slice(topN);
+  return {
+    top,
+    others: { slabs: rest.reduce((s, x) => s + x.slabs, 0), count: rest.length },
+    totalDistinct: all.length,
+    totalSlabs,
+  };
+}
+
 export async function getTopLocations(opts: BaseOpts & { limit?: number } = {}): Promise<LocationRow[]> {
   const limit = opts.limit ?? 10;
   const cte = latestJobsCte(opts.source);

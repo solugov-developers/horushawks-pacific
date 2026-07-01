@@ -6,7 +6,7 @@ import {
   type LocationGroup,
   type MaterialRow,
 } from '@/lib/queries/inventory';
-import { getLocationsGeo, getTopCategories } from '@/lib/queries/overview';
+import { getLocationsGeo, getCategoriesBreakdown } from '@/lib/queries/overview';
 import { SourcePicker } from '@/components/source-picker';
 import { DonutChart } from '@/components/charts/donut-chart';
 import { USMap } from '@/components/charts/us-map';
@@ -23,14 +23,20 @@ interface PageProps {
 export default async function InventoryPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const source = findSource(sp.source)?.slug ?? ALL_SOURCES;
-  const [snap, geo, heatmap, categories] = await Promise.all([
+  const [snap, geo, heatmap, catsBreakdown] = await Promise.all([
     getInventorySnapshot({ source }),
     getLocationsGeo(),
     getInventoryHeatmap({ topCategories: 8, topLocations: 10 }),
-    getTopCategories({ source, limit: 8 }),
+    getCategoriesBreakdown({ source, topN: 10 }),
   ]);
   const sourceLabel = source === ALL_SOURCES ? `${snap.scrapersCovered} sources` : (findSource(source)?.label ?? source);
-  const donutCats = categories.map((c) => ({ name: c.category, value: c.slabs }));
+  const donutCats = catsBreakdown.top.map((c) => ({ name: c.category, value: c.slabs }));
+  if (catsBreakdown.others.slabs > 0) {
+    donutCats.push({
+      name: `Other (${catsBreakdown.others.count})`,
+      value: catsBreakdown.others.slabs,
+    });
+  }
 
   return (
     <main className="mx-auto w-full max-w-[1280px] px-6 md:px-10 py-10 md:py-14">
@@ -66,7 +72,7 @@ export default async function InventoryPage({ searchParams }: PageProps) {
                 <h3 className="text-base font-medium text-text-strong">Top categories</h3>
                 <p className="text-xs text-text-muted mt-0.5">Share of total slabs</p>
               </div>
-              <DonutChart data={donutCats} centerLabel={String(categories.length)} centerSubLabel="families" />
+              <DonutChart data={donutCats} centerLabel={String(catsBreakdown.totalDistinct)} centerSubLabel={catsBreakdown.totalDistinct === 1 ? 'family' : 'families'} />
             </div>
           </section>
 
