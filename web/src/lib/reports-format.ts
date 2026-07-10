@@ -85,3 +85,52 @@ export function toSQL(columns: readonly string[], rows: ReportRow[], meta: SqlMe
 
   return `${head}\n${parts.join('\n\n')}\nCOMMIT;\n`;
 }
+
+// ---------------------------------------------------------------------------
+// Variantes de streaming: emitem bytes (Uint8Array) por pedaço, sem materializar
+// o arquivo inteiro. Usadas pelo route de export com cursor. Ver route.ts.
+// ---------------------------------------------------------------------------
+const encoder = new TextEncoder();
+
+export function csvHeaderBytes(columns: readonly string[]): Uint8Array {
+  // BOM (﻿) pra Excel abrir UTF-8 sem trocar acento.
+  return encoder.encode('﻿' + columns.join(',') + '\r\n');
+}
+
+export function csvRowsBytes(columns: readonly string[], rows: ReportRow[]): Uint8Array {
+  let out = '';
+  for (const row of rows) {
+    out += columns.map((c) => cellCsv((row as Record<string, unknown>)[c])).join(',') + '\r\n';
+  }
+  return encoder.encode(out);
+}
+
+export function sqlHeaderBytes(meta: Pick<SqlMeta, 'from' | 'to' | 'generatedAt'>): Uint8Array {
+  const head = [
+    `-- HorusHawks · slabs_history dump (streaming)`,
+    `-- Range: ${meta.from} to ${meta.to} (inclusive)`,
+    `-- Generated: ${meta.generatedAt}`,
+    ``,
+    SQL_HEADER_DDL,
+    ``,
+    `BEGIN;`,
+    ``,
+  ].join('\n');
+  return encoder.encode(head + '\n');
+}
+
+export function sqlInsertBytes(columns: readonly string[], rows: ReportRow[]): Uint8Array {
+  if (rows.length === 0) return new Uint8Array(0);
+  const colList = columns.join(', ');
+  const values = rows
+    .map(
+      (row) =>
+        `  (${columns.map((c) => cellSql((row as Record<string, unknown>)[c])).join(', ')})`,
+    )
+    .join(',\n');
+  return encoder.encode(`INSERT INTO slabs_history_export (${colList}) VALUES\n${values};\n\n`);
+}
+
+export function sqlFooterBytes(): Uint8Array {
+  return encoder.encode('COMMIT;\n');
+}

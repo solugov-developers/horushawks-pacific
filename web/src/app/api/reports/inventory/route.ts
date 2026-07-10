@@ -1,12 +1,34 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import {
-  queryInventoryReport,
+  streamInventoryRows,
   REPORT_COLUMNS,
 } from '@/lib/queries/reports';
-import { toCSV, toSQL } from '@/lib/reports-format';
+import {
+  csvHeaderBytes,
+  csvRowsBytes,
+  sqlHeaderBytes,
+  sqlInsertBytes,
+  sqlFooterBytes,
+} from '@/lib/reports-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+// Converte um async iterator (bytes) num ReadableStream. Ver doc do Next 16:
+// node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md#streaming
+function iteratorToStream(iterator: AsyncIterator<Uint8Array>): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { value, done } = await iterator.next();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    async cancel() {
+      // Download abortado: encerra o gerador -> roda o finally (ROLLBACK+release).
+      await iterator.return?.();
+    },
+  });
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -41,23 +63,33 @@ export async function GET(req: NextRequest) {
     : null;
 
   const toExclusive = addDay(to);
-  const rows = await queryInventoryReport({
+  const opts = {
     from,
     toExclusive,
     scraperIds: scraperIds && scraperIds.length ? scraperIds : null,
-  });
+  };
+
+  // Gera os bytes por pedaço a partir do cursor — memória constante mesmo em
+  // exports de centenas de milhares de linhas (antes montava tudo em memória e
+  // estourava os 250MB do container).
+  async function* csvBytes(): AsyncGenerator<Uint8Array> {
+    yield csvHeaderBytes(REPORT_COLUMNS);
+    for await (const batch of streamInventoryRows(opts)) {
+      yield csvRowsBytes(REPORT_COLUMNS, batch);
+    }
+  }
+  async function* sqlBytes(): AsyncGenerator<Uint8Array> {
+    yield sqlHeaderBytes({ from, to, generatedAt: new Date().toISOString() });
+    for await (const batch of streamInventoryRows(opts)) {
+      yield sqlInsertBytes(REPORT_COLUMNS, batch);
+    }
+    yield sqlFooterBytes();
+  }
 
   const filename = `horushawks-inventory-${from}_${to}.${format}`;
-  const body =
-    format === 'csv'
-      ? toCSV(REPORT_COLUMNS, rows)
-      : toSQL(REPORT_COLUMNS, rows, {
-          from,
-          to,
-          generatedAt: new Date().toISOString(),
-        });
+  const stream = iteratorToStream((format === 'csv' ? csvBytes() : sqlBytes())[Symbol.asyncIterator]());
 
-  return new Response(body, {
+  return new Response(stream, {
     headers: {
       'Content-Type':
         format === 'csv'
@@ -65,7 +97,6 @@ export async function GET(req: NextRequest) {
           : 'application/sql; charset=utf-8',
       'Content-Disposition': `attachment; filename="${filename}"`,
       'Cache-Control': 'no-store',
-      'X-Row-Count': String(rows.length),
     },
   });
 }

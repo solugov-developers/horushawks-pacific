@@ -16,4 +16,7 @@ if (process.env.NODE_ENV !== 'production') {
   global.__pgPool = pool;
 }
 
+// Exposto para streaming com cursor server-side (exports grandes). Ver
+// streamInventoryRows em queries/reports.ts.
+export { pool };
 export const db = drizzle(pool, { schema });
