@@ -38,6 +38,9 @@ docker compose exec -T postgres psql -U scraper -d scrapers < db/init.sql
 docker compose exec -T postgres psql -U scraper -d scrapers < db/002_encore.sql
 docker compose exec -T postgres psql -U scraper -d scrapers < db/003_more_scrapers.sql
 docker compose exec -T postgres psql -U scraper -d scrapers < db/004_platform.sql
+docker compose exec -T postgres psql -U scraper -d scrapers < db/005_movement_kinds_and_status.sql
+docker compose exec -T postgres psql -U scraper -d scrapers < db/006_update_scraper_actions.sql
+docker compose exec -T postgres psql -U scraper -d scrapers < db/007_saved_queries.sql
 
 # 4. (opcional) tokens dos robôs Stone Profits autenticados
 cp db/secrets.sql.example db/secrets.sql

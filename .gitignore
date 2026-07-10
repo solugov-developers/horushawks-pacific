@@ -2,7 +2,13 @@
 .env
 .env.local
 .env.*.local
+.env.prod
+.env.deploy
 db/secrets.sql
+/secrets.sql
+secrets*.sql
+
+# Infra (terraform removido; AWS CLI direto via infra/provision.sh)
 
 # Node
 node_modules/
@@ -30,6 +36,9 @@ build/
 # Docker volumes (caso algum dia bind mount)
 pgdata/
 redisdata/
+
+# Docker dev overrides (cada dev tem o seu)
+docker-compose.override.yml
 
 # Outputs gerados localmente
 relatorios/

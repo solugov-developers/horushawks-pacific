@@ -166,6 +166,7 @@
             <div class="text-[10px] text-stone-500 leading-tight truncate">conta principal</div>
           </div>
           <form action="/logout" method="post">
+            <%- include('_csrf', { token: getCsrfToken() }) %>
             <button type="submit" title="Sair" class="text-stone-500 hover:text-stone-900 transition-colors"><i data-lucide="log-out"></i></button>
           </form>
         </div>

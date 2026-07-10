@@ -11,6 +11,7 @@
 <% } %>
 
 <form action="/scrapers" method="post" class="space-y-5 max-w-3xl">
+  <%- include('_csrf', { token: getCsrfToken() }) %>
   <% if (scraper && scraper.id) { %><input type="hidden" name="id" value="<%= scraper.id %>"><% } %>
 
   <div class="card p-6">

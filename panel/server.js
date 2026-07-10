@@ -3,29 +3,124 @@ const session = require('express-session');
 const path = require('path');
 const crypto = require('crypto');
 const cronParser = require('cron-parser');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+const { doubleCsrf } = require('csrf-csrf');
 const db = require('./lib/db');
 const { scrapeQueue } = require('./lib/queue');
 const { veining } = require('./lib/veining');
+const { verifyCredentials, bootstrapAdmin } = require('./lib/auth');
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET || SESSION_SECRET === 'change-me' || SESSION_SECRET === 'dev-secret-trocar-em-producao-trocar') {
+  if (IS_PROD) {
+    console.error('[panel] SESSION_SECRET inválido em produção. Aborting.');
+    process.exit(1);
+  } else {
+    console.warn('[panel] SESSION_SECRET inseguro — só serve em dev.');
+  }
+}
 
 const app = express();
+app.set('trust proxy', 1); // necessário atrás de Caddy/ALB
+
+// Helmet: headers de segurança (CSP, X-Frame, etc.)
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      // Tailwind via CDN + HTMX inline events. Permitir 'unsafe-inline' no CSS
+      // até trocarmos pra Tailwind buildado. Scripts vêm de CDNs conhecidos.
+      'script-src':  ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com', 'https://unpkg.com', 'https://cdn.jsdelivr.net'],
+      'style-src':   ["'self'", "'unsafe-inline'", 'https://cdn.tailwindcss.com', 'https://fonts.googleapis.com'],
+      'font-src':    ["'self'", 'data:', 'https://fonts.gstatic.com'],
+      'img-src':     ["'self'", 'data:', 'blob:', 'https:'],
+      'connect-src': ["'self'"],
+    },
+  },
+}));
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.json({ limit: '5mb' }));
+app.use(cookieParser(SESSION_SECRET || 'dev-cookie-secret'));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-me',
+  name: 'horushawks.sid',
+  secret: SESSION_SECRET || 'dev-only-do-not-use-in-prod',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 },
+  cookie: {
+    maxAge: 1000 * 60 * 60 * 24 * 7,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: IS_PROD, // só HTTPS em prod
+  },
 }));
+
+// Rate limits ----------------------------------------------------------------
+// /login: 10 tentativas / 15min por IP
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Muitas tentativas. Tente novamente em 15 minutos.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+// /api/v1: 60 req/min por IP (tokens podem subir esse limite — TODO)
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// CSRF -----------------------------------------------------------------------
+// double-submit cookie. Pula /api/v1/* (Bearer token é auth+integrity).
+const { doubleCsrfProtection, generateToken } = doubleCsrf({
+  getSecret: () => SESSION_SECRET || 'dev-csrf-secret-only',
+  cookieName: IS_PROD ? '__Host-horushawks.x-csrf' : 'horushawks.x-csrf',
+  cookieOptions: { sameSite: 'lax', httpOnly: true, secure: IS_PROD, path: '/' },
+  size: 32,
+  ignoredMethods: ['GET', 'HEAD', 'OPTIONS'],
+  getTokenFromRequest: (req) => req.body?._csrf || req.headers['x-csrf-token'],
+});
+
+function csrfMiddleware(req, res, next) {
+  // API tem auth Bearer e não usa cookie de sessão, pula CSRF.
+  if (req.path.startsWith('/api/')) return next();
+  return doubleCsrfProtection(req, res, next);
+}
+app.use(csrfMiddleware);
+
+// Expõe csrfToken (já gerado) pra views. EJS includes não herdam locals
+// por default, então geramos uma vez por request e o include recebe via parâmetro.
+app.use((req, res, next) => {
+  let cachedToken = null;
+  res.locals.getCsrfToken = () => {
+    if (cachedToken == null) {
+      try {
+        cachedToken = generateToken(req, res);
+      } catch (e) {
+        console.warn('[panel] generateToken falhou:', e.message);
+        cachedToken = '';
+      }
+    }
+    return cachedToken;
+  };
+  next();
+});
 
 function requireAuth(req, res, next) {
   if (req.session.authed) return next();
+  // CRÍTICO: NÃO dar bypass cego em /api. Cada handler de /api/v1 chama
+  // requireApiToken (Bearer). Aqui só redirecionamos UI.
   if (req.path.startsWith('/api/')) {
-    return next(); // API tem auth própria
+    return res.status(401).json({ error: 'unauthorized' });
   }
   res.redirect('/login');
 }
@@ -46,26 +141,39 @@ app.get('/login', (req, res) => {
   res.render('login', { error: null });
 });
 
-app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
-  if (
-    username && password &&
-    username === process.env.PANEL_USER &&
-    password === process.env.PANEL_PASSWORD
-  ) {
-    req.session.authed = true;
-    req.session.user = username;
-    audit(username, 'login', null, {}, req.ip);
-    return res.redirect('/');
+app.post('/login', loginLimiter, async (req, res) => {
+  const { username, password } = req.body || {};
+  try {
+    const user = await verifyCredentials(username, password);
+    if (user) {
+      req.session.regenerate((err) => {
+        if (err) {
+          console.error('[panel] session regenerate falhou:', err);
+          return res.status(500).render('login', { error: 'Erro interno' });
+        }
+        req.session.authed = true;
+        req.session.userId = user.id;
+        req.session.user = user.username;
+        req.session.role = user.role;
+        audit(user.username, 'login', null, { role: user.role }, req.ip);
+        res.redirect('/');
+      });
+      return;
+    }
+  } catch (e) {
+    console.error('[panel] verifyCredentials erro:', e.message);
   }
   audit(username || '?', 'login.failed', null, {}, req.ip);
-  res.render('login', { error: 'Usuário ou senha inválidos' });
+  res.status(401).render('login', { error: 'Usuário ou senha inválidos' });
 });
 
 app.post('/logout', (req, res) => {
   audit(req.session.user || '?', 'logout', null, {}, req.ip);
   req.session.destroy(() => res.redirect('/login'));
 });
+
+// Aplica rate limit a /api/v1 (deve vir antes das rotas)
+app.use('/api/v1', apiLimiter);
 
 // ================== DASHBOARD (OPR) ==================
 app.get('/', requireAuth, async (req, res) => {
@@ -629,5 +737,22 @@ app.get('/api/v1/movements', requireApiToken, async (req, res) => {
   res.json({ data: rows });
 });
 
+// Handler 403 amigável quando CSRF falha
+app.use((err, req, res, next) => {
+  if (err && err.code === 'EBADCSRFTOKEN') {
+    return res.status(403).render('login', { error: 'Sessão expirada ou token inválido. Faça login de novo.' });
+  }
+  if (err) {
+    console.error('[panel] erro não tratado:', err);
+    return res.status(500).json({ error: 'internal error' });
+  }
+  next();
+});
+
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Painel rodando na porta ${port}`));
+
+bootstrapAdmin()
+  .catch(err => console.error('[panel] bootstrap admin falhou:', err.message))
+  .finally(() => {
+    app.listen(port, () => console.log(`Painel rodando na porta ${port}`));
+  });

@@ -1,0 +1,65 @@
+# ============================================================
+# HorusHawks · Caddyfile (produção)
+#
+# Placeholders substituídos pelo deploy.sh:
+#   {{APP_DOMAIN}}   = app.seudominio.com
+#   {{ADMIN_DOMAIN}} = admin.seudominio.com
+#   {{EMAIL}}        = teu-email@dominio.com (pra Let's Encrypt)
+#
+# Caddy resolve TLS automaticamente. Headers de segurança aplicados.
+# ============================================================
+
+{
+  email {{EMAIL}}
+  # auto_https off  # use só se for testar localmente
+}
+
+# ──────────────────────────────────────────────────────────────────
+# Painel cliente (Next.js)
+# ──────────────────────────────────────────────────────────────────
+{{APP_DOMAIN}} {
+  encode gzip zstd
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    -Server
+  }
+
+  reverse_proxy localhost:3000 {
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Real-IP {remote_host}
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────
+# Painel admin (EJS) — protegido por basic auth ADICIONAL ao login interno.
+# Use `caddy hash-password` pra gerar o hash.
+# ──────────────────────────────────────────────────────────────────
+{{ADMIN_DOMAIN}} {
+  encode gzip zstd
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  # Camada extra de defesa: basic auth no Caddy + login interno do painel.
+  # Substitua o hash gerado: caddy hash-password --plaintext "sua-senha-aqui"
+  basic_auth {
+    admin {{ADMIN_BASIC_HASH}}
+  }
+
+  reverse_proxy localhost:3001 {
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Real-IP {remote_host}
+  }
+}

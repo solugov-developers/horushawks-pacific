@@ -19,6 +19,7 @@
   </a>
   <div class="flex items-center gap-2">
     <form action="/scrapers/<%= scraper.id %>/run" method="post">
+      <%- include('_csrf', { token: getCsrfToken() }) %>
       <button type="submit" class="inline-flex items-center gap-2 rounded-lg btn-accent px-4 py-2 text-sm font-medium">
         <i data-lucide="play" class="!w-4 !h-4"></i> Rodar agora
       </button>
