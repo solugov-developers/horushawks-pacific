@@ -68,7 +68,7 @@ cmd_first_time() {
   for sql in db/init.sql db/002_encore.sql db/003_more_scrapers.sql db/004_platform.sql \
              db/005_movement_kinds_and_status.sql db/006_update_scraper_actions.sql \
              db/007_saved_queries.sql db/008_users_and_reaper.sql db/009_irgstone.sql \
-             db/010_fix_column_maps.sql \
+             db/010_fix_column_maps.sql db/011_thestoneindustry.sql \
              db/secrets.sql; do
     echo "    aplicando $sql…"
     $SSH "cd $REMOTE_DIR && docker compose exec -T postgres psql -U \$(grep POSTGRES_USER .env | cut -d= -f2) -d \$(grep POSTGRES_DB .env | cut -d= -f2) -v ON_ERROR_STOP=1 < $sql" || echo "    (já aplicada?)"
