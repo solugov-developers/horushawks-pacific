@@ -5,6 +5,13 @@ import { sql as drz } from 'drizzle-orm';
 import { execReadOnly, type QueryResult, type QueryError } from '@/lib/db/exec-readonly';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { getSession } from '@/lib/session';
+
+// A tela SQL é restrita a admin (defesa em profundidade além do middleware).
+async function requireAdmin() {
+  const s = await getSession();
+  if (!s || s.role !== 'admin') throw new Error('acesso negado: requer admin');
+}
 
 export interface RunPayload {
   result: QueryResult | QueryError;
@@ -19,6 +26,7 @@ export interface RunPayload {
  * useActionState no client. Aqui, retornamos o payload.
  */
 export async function runSqlAction(_prev: RunPayload | null, formData: FormData): Promise<RunPayload> {
+  await requireAdmin();
   const sql = String(formData.get('sql') ?? '');
   const savedIdRaw = formData.get('savedId');
   const savedId = savedIdRaw ? Number(savedIdRaw) : null;
@@ -54,6 +62,7 @@ export async function runSqlAction(_prev: RunPayload | null, formData: FormData)
  * Salva uma nova query OU atualiza existente (se savedId).
  */
 export async function saveQueryAction(formData: FormData) {
+  await requireAdmin();
   const name = String(formData.get('name') ?? '').trim();
   const description = String(formData.get('description') ?? '').trim() || null;
   const sqlText = String(formData.get('sql') ?? '').trim();
@@ -91,6 +100,7 @@ export async function saveQueryAction(formData: FormData) {
  * Deleta uma saved query.
  */
 export async function deleteQueryAction(formData: FormData) {
+  await requireAdmin();
   const id = Number(formData.get('id'));
   if (!Number.isInteger(id) || id <= 0) throw new Error('id inválido');
 

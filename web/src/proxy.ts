@@ -27,6 +27,17 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+  // Telas restritas a admin (ex.: SQL runner). Viewers são redirecionados p/ home.
+  const ADMIN_ONLY = ['/sql'];
+  if (
+    ADMIN_ONLY.some((p) => pathname === p || pathname.startsWith(p + '/')) &&
+    session.role !== 'admin'
+  ) {
+    const url = req.nextUrl.clone();
+    url.pathname = '/';
+    return NextResponse.redirect(url);
+  }
+
   return NextResponse.next();
 }
 

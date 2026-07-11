@@ -1,8 +1,10 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { Plus, Clock, AlertCircle } from 'lucide-react';
 import { listSavedQueries, getSavedQuery } from '@/lib/queries/saved';
 import { SqlRunner } from './sql-runner';
 import { fmtNum, cn } from '@/lib/utils';
+import { getSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +13,10 @@ interface PageProps {
 }
 
 export default async function SqlPage({ searchParams }: PageProps) {
+  // Tela restrita a admin (viewers como o "varanda" não acessam).
+  const session = await getSession();
+  if (!session || session.role !== 'admin') redirect('/');
+
   const sp = await searchParams;
   const id = sp.id ? Number(sp.id) : null;
 

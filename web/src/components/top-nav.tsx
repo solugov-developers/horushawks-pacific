@@ -13,13 +13,15 @@ const links = [
   { href: '/reports',    label: 'Reports' },
   { href: '/data',       label: 'Data' },
   { href: '/scrapers',   label: 'Scrapers' },
-  { href: '/sql',        label: 'SQL' },
+  { href: '/sql',        label: 'SQL', adminOnly: true },
 ];
 
-export function TopNav({ userSlot }: { userSlot?: ReactNode }) {
+export function TopNav({ userSlot, role }: { userSlot?: ReactNode; role?: string }) {
   const pathname = usePathname();
   // Esconder a nav nas páginas públicas (login)
   if (pathname === '/login' || pathname.startsWith('/login/')) return null;
+  // Links restritos a admin (ex.: SQL) somem para viewers.
+  const visibleLinks = links.filter((l) => !l.adminOnly || role === 'admin');
   return (
     <nav className="border-b border-border bg-bg/85 backdrop-blur-xl backdrop-saturate-150 sticky top-0 z-30">
       <div className="mx-auto max-w-[1280px] px-6 md:px-10">
@@ -36,7 +38,7 @@ export function TopNav({ userSlot }: { userSlot?: ReactNode }) {
           </Link>
 
           <ul className="flex items-center gap-1 text-sm overflow-x-auto flex-1 justify-center">
-            {links.map(l => {
+            {visibleLinks.map(l => {
               const active = l.href === '/' ? pathname === '/' : pathname.startsWith(l.href);
               return (
                 <li key={l.href}>
