@@ -144,13 +144,22 @@ async function runActions(actions, ctx, runCtx) {
 
       if (action.save_as) ctx.state[action.save_as] = data;
       if (action.append_to) {
-        const target = ctx.state[action.append_to];
-        if (Array.isArray(target)) {
-          if (Array.isArray(data)) target.push(...data);
-          else target.push(data);
-        } else {
-          ctx.state[action.append_to] = Array.isArray(data) ? [...data] : [data];
+        let rows = Array.isArray(data) ? data : [data];
+        // stamp_from_item: carimba campos do item do loop atual em cada linha
+        // (ex.: SubCategory/Thickness da galeria nas linhas do inventário por bloco).
+        if (action.stamp_from_item && ctx.item && typeof ctx.item === 'object') {
+          rows = rows.map((row) => {
+            if (!row || typeof row !== 'object') return row;
+            const stamped = { ...row };
+            for (const [destKey, itemPath] of Object.entries(action.stamp_from_item)) {
+              stamped[destKey] = getPath(ctx.item, itemPath);
+            }
+            return stamped;
+          });
         }
+        const target = ctx.state[action.append_to];
+        if (Array.isArray(target)) target.push(...rows);
+        else ctx.state[action.append_to] = [...rows];
       }
       continue;
     }
