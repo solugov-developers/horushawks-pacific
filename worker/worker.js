@@ -19,7 +19,19 @@ function getPath(obj, path) {
   let v = obj;
   for (const p of parts) {
     if (v == null) return undefined;
-    v = v[p];
+    // Filtro de array por campo: "attributes[name=lot]" -> acha o elemento cujo
+    // campo == valor (case-insensitive). Útil p/ APIs onde a ordem do array varia
+    // (ex.: WooCommerce attributes do irgstone).
+    const m = /^([^[]+)\[([^=]+)=(.*)\]$/.exec(p);
+    if (m) {
+      const arr = v[m[1]];
+      if (!Array.isArray(arr)) return undefined;
+      const field = m[2];
+      const want = String(m[3]).toLowerCase();
+      v = arr.find((e) => e != null && String(e[field]).toLowerCase() === want);
+    } else {
+      v = v[p];
+    }
   }
   return v;
 }
@@ -65,7 +77,8 @@ function pickRowValues(row, colMap, constants) {
   const out = {};
   const usedTops = new Set();
   for (const [dbCol, srcPath] of Object.entries(colMap)) {
-    usedTops.add(String(srcPath).split('.')[0]);
+    // top-level key sem o filtro de array (ex.: "attributes[name=lot]" -> "attributes")
+    usedTops.add(String(srcPath).split('.')[0].replace(/\[.*$/, ''));
     const v = getPath(row, srcPath);
     let resolved = v === undefined ? null : v;
     if (BOOL_COLUMNS.has(dbCol)) {
