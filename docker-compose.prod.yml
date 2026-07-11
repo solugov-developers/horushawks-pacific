@@ -76,6 +76,7 @@ services:
       PANEL_URL: http://panel:3000
       PANEL_USER: ${PANEL_USER}
       PANEL_PASSWORD: ${PANEL_PASSWORD}
+      PANEL_API_TOKEN: ${PANEL_API_TOKEN}
       PORT: "3000"
     depends_on:
       postgres:

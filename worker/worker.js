@@ -83,8 +83,18 @@ function pickRowValues(row, colMap, constants) {
   return { values: out, usedTops };
 }
 
-function buildSourceKey(row, vals) {
-  // identidade da chapa: prefere serial_number, depois bundle, depois item_id
+function buildSourceKey(vals, spec) {
+  // Spec explícito (ex.: ["item_id","bundle"]) -> concatena os valores não-nulos
+  // com '|'. Útil quando nenhum campo isolado é único (ex.: thestoneindustry, em
+  // que IDOne colide mas item_id+IDOne é único).
+  if (Array.isArray(spec) && spec.length) {
+    const parts = spec
+      .map((c) => vals[c])
+      .filter((v) => v != null && v !== '')
+      .map(String);
+    return parts.length ? parts.join('|') : null;
+  }
+  // Padrão: prefere serial_number, depois bundle, depois item_id
   return (vals.serial_number != null && String(vals.serial_number)) ||
          (vals.bundle != null && String(vals.bundle)) ||
          (vals.item_id != null && String(vals.item_id)) ||
@@ -139,7 +149,7 @@ async function persistSaveRows(client, action, state, ctx) {
       valuesSql.push(`(${placeholders.join(', ')})`);
 
       // INSERT em slabs_history
-      const sourceKey = buildSourceKey(row, vals);
+      const sourceKey = buildSourceKey(vals, action.source_key);
       if (sourceKey != null) {
         const sp = [];
         snapParams.push(ctx.scraperId); sp.push(`$${snapParams.length}`);

@@ -42,30 +42,19 @@ export async function runNowAction(formData: FormData) {
   const id = Number(formData.get('id'));
   if (!Number.isInteger(id) || id <= 0) throw new Error('id inválido');
 
-  // Cria job manualmente (mesmo que o panel faz internamente)
-  // e enfileira via Redis. Ambos rodam dentro do worker network.
-  // Daqui (server action), não temos rede docker — então chamamos o panel.
+  // Chama a API do painel (Bearer token, isenta de CSRF). Antes usávamos login
+  // de navegador, que o CSRF do painel passou a bloquear (403).
   const panelUrl = process.env.PANEL_URL || 'http://localhost:3001';
-  const username = process.env.PANEL_USER || 'admin';
-  const password = process.env.PANEL_PASSWORD || 'euler123';
+  const token = process.env.PANEL_API_TOKEN;
+  if (!token) throw new Error('PANEL_API_TOKEN não configurado no ambiente do web');
 
-  // login (HTTP 302) + run (HTTP 302)
-  const loginRes = await fetch(`${panelUrl}/login`, {
+  const runRes = await fetch(`${panelUrl}/api/v1/scrapers/${id}/run`, {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ username, password }),
-    redirect: 'manual',
+    headers: { authorization: `Bearer ${token}` },
   });
-  const cookie = loginRes.headers.get('set-cookie');
-  if (!cookie) throw new Error('login falhou — cookie não retornado');
-
-  const runRes = await fetch(`${panelUrl}/scrapers/${id}/run`, {
-    method: 'POST',
-    headers: { cookie: cookie.split(';')[0] },
-    redirect: 'manual',
-  });
-  if (runRes.status !== 302 && runRes.status !== 200) {
-    throw new Error(`run falhou: HTTP ${runRes.status}`);
+  if (!runRes.ok) {
+    const body = await runRes.text().catch(() => '');
+    throw new Error(`run falhou: HTTP ${runRes.status} ${body.slice(0, 140)}`);
   }
 
   revalidatePath('/scrapers');

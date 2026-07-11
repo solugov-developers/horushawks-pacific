@@ -737,6 +737,23 @@ app.get('/api/v1/movements', requireApiToken, async (req, res) => {
   res.json({ data: rows });
 });
 
+// Dispara um run (usado pelo web, server-a-server). Bearer token, isento de CSRF.
+app.post('/api/v1/scrapers/:id/run', requireApiToken, async (req, res) => {
+  const scraperId = parseInt(req.params.id, 10);
+  if (!Number.isInteger(scraperId) || scraperId <= 0) {
+    return res.status(400).json({ error: 'id inválido' });
+  }
+  const s = await db.query('SELECT id FROM scrapers WHERE id = $1', [scraperId]);
+  if (!s.rows[0]) return res.status(404).json({ error: 'scraper não encontrado' });
+  const { rows } = await db.query(
+    `INSERT INTO jobs (scraper_id, status, triggered_by) VALUES ($1, 'queued', 'manual') RETURNING id`,
+    [scraperId]
+  );
+  const jobId = rows[0].id;
+  await scrapeQueue.add('run', { jobId, scraperId });
+  res.json({ data: { jobId, scraperId } });
+});
+
 // Handler 403 amigável quando CSRF falha
 app.use((err, req, res, next) => {
   if (err && err.code === 'EBADCSRFTOKEN') {
