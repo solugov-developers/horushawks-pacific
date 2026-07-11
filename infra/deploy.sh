@@ -152,6 +152,25 @@ cmd_restart() {
   $SSH "cd $REMOTE_DIR && docker compose restart ${2:-}"
 }
 
+# Rebuild forçado (sem cache) + recria o container de um serviço.
+# Usado quando `update` fica preso em cache e não troca o container.
+cmd_rebuild() {
+  SERVICE="${2:-}"
+  if [ -z "$SERVICE" ]; then echo "uso: ./infra/deploy.sh rebuild <serviço>"; return 1; fi
+  echo "==> Sincronizando código…"
+  cmd_sync
+  echo "==> Rebuild --no-cache + force-recreate: $SERVICE"
+  $SSH "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml build --no-cache $SERVICE && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --force-recreate $SERVICE"
+  echo "==> Status:"
+  $SSH "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml ps $SERVICE"
+}
+
+# Roda um comando arbitrário no REMOTE_DIR da instância (diagnóstico/manutenção).
+cmd_exec() {
+  shift
+  $SSH "cd $REMOTE_DIR && $*"
+}
+
 cmd_help() {
   echo "Comandos:"
   echo "  first-time          Primeiro deploy (cloud-init + tudo)"
@@ -174,6 +193,8 @@ case "${1:-help}" in
   ssh)               cmd_ssh ;;
   psql)              cmd_psql ;;
   restart)           cmd_restart "$@" ;;
+  rebuild)           cmd_rebuild "$@" ;;
+  exec)              cmd_exec "$@" ;;
   help|--help|-h|"") cmd_help ;;
   *)                 echo "Comando desconhecido: $1"; cmd_help; exit 1 ;;
 esac
