@@ -120,7 +120,7 @@ INSERT INTO scrapers (name, description, url, actions, vars, schedule, enabled) 
     }
   ]$JSON$::jsonb,
   '{"auth_token": "", "trimmed_user_id": "random16"}'::jsonb,
-  NULL, true
+  '0 1 * * *', true
 )
 ON CONFLICT (name) DO UPDATE SET
   url=EXCLUDED.url, actions=EXCLUDED.actions,
