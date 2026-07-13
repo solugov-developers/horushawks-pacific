@@ -130,7 +130,7 @@ async function persistSaveRows(client, action, state, ctx) {
   const colList = allCols.map(quoteIdent).join(', ');
 
   // Snapshots: colunas conhecidas
-  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit','payload'];
+  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit','payload'];
 
   const BATCH = 500;
   let inserted = 0;
@@ -168,7 +168,7 @@ async function persistSaveRows(client, action, state, ctx) {
         snapParams.push(ctx.scraperId); sp.push(`$${snapParams.length}`);
         snapParams.push(ctx.jobId);     sp.push(`$${snapParams.length}`);
         snapParams.push(sourceKey);     sp.push(`$${snapParams.length}`);
-        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit']) {
+        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit']) {
           snapParams.push(vals[k] === undefined ? null : vals[k]);
           sp.push(`$${snapParams.length}`);
         }

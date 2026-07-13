@@ -40,6 +40,7 @@ const SQL_HEADER_DDL = `CREATE TABLE IF NOT EXISTS slabs_history_export (
   color           TEXT,
   location        TEXT,
   thickness       TEXT,
+  finish          TEXT,
   available_qty   NUMERIC,
   available_slabs INTEGER,
   price           NUMERIC,
