@@ -73,13 +73,40 @@ function collectSaveRows(actions, acc = []) {
   return acc;
 }
 
+// top-level key de um srcPath, sem filtro de array ("attributes[name=lot].x" -> "attributes")
+function topKey(srcPath) {
+  return String(srcPath).split('.')[0].replace(/\[.*$/, '');
+}
+
+/**
+ * Resolve o srcPath de uma coluna. Suporta template "{{campo}}{{outro}}", que
+ * CONCATENA os valores — necessário porque alguns fornecedores só têm identidade
+ * única na junção de dois campos (ex.: StoneProfits: SerialPrefix + IDTwo, que é
+ * exatamente o que o robô original do cliente fazia).
+ * Sem "{{", é o comportamento antigo (um campo só, via getPath).
+ */
+function resolveSrc(row, srcPath) {
+  const s = String(srcPath);
+  if (!s.includes('{{')) return getPath(row, s);
+  const out = s.replace(/\{\{([^}]+)\}\}/g, (_, p) => {
+    const v = getPath(row, p.trim());
+    return v == null ? '' : String(v);
+  });
+  return out === '' ? null : out; // template vazio -> NULL (não string vazia)
+}
+
 function pickRowValues(row, colMap, constants) {
   const out = {};
   const usedTops = new Set();
   for (const [dbCol, srcPath] of Object.entries(colMap)) {
-    // top-level key sem o filtro de array (ex.: "attributes[name=lot]" -> "attributes")
-    usedTops.add(String(srcPath).split('.')[0].replace(/\[.*$/, ''));
-    const v = getPath(row, srcPath);
+    const s = String(srcPath);
+    if (s.includes('{{')) {
+      // template: marca TODOS os campos referenciados como usados
+      for (const m of s.matchAll(/\{\{([^}]+)\}\}/g)) usedTops.add(topKey(m[1].trim()));
+    } else {
+      usedTops.add(topKey(s));
+    }
+    const v = resolveSrc(row, s);
     let resolved = v === undefined ? null : v;
     if (BOOL_COLUMNS.has(dbCol)) {
       resolved = coerceBool(resolved);
