@@ -27,9 +27,7 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: 'HorusHawks',
   description: 'Precision intelligence extraction',
-  icons: {
-    icon: '/horushawks-mark.png',
-  },
+  // ícones vêm de app/favicon.ico e app/apple-icon.png (file convention)
 };
 
 export default async function RootLayout({
