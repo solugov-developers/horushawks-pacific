@@ -69,7 +69,7 @@ cmd_first_time() {
              db/005_movement_kinds_and_status.sql db/006_update_scraper_actions.sql \
              db/007_saved_queries.sql db/008_users_and_reaper.sql db/009_irgstone.sql \
              db/010_fix_column_maps.sql db/011_thestoneindustry.sql \
-             db/012_tsi_source_key.sql db/013_tsi_enrich.sql db/014_irgstone_source_key.sql db/015_irgstone_clean_serial.sql db/016_irgstone_remap_by_name.sql db/017_finish_column.sql db/018_fix_identifiers.sql db/019_zucchi_location.sql \
+             db/012_tsi_source_key.sql db/013_tsi_enrich.sql db/014_irgstone_source_key.sql db/015_irgstone_clean_serial.sql db/016_irgstone_remap_by_name.sql db/017_finish_column.sql db/018_fix_identifiers.sql db/019_zucchi_location.sql db/020_reconcile_bi_keys.sql \
              db/secrets.sql; do
     echo "    aplicando $sql…"
     $SSH "cd $REMOTE_DIR && docker compose exec -T postgres psql -U \$(grep POSTGRES_USER .env | cut -d= -f2) -d \$(grep POSTGRES_DB .env | cut -d= -f2) -v ON_ERROR_STOP=1 < $sql" || echo "    (já aplicada?)"
