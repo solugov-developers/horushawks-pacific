@@ -88,9 +88,15 @@ function topKey(srcPath) {
 function resolveSrc(row, srcPath) {
   const s = String(srcPath);
   if (!s.includes('{{')) return getPath(row, s);
-  const out = s.replace(/\{\{([^}]+)\}\}/g, (_, p) => {
-    const v = getPath(row, p.trim());
-    return v == null ? '' : String(v);
+  const out = s.replace(/\{\{([^}]+)\}\}/g, (_, expr) => {
+    // filtro opcional "campo|url" -> URL-encode do valor (ex.: nome de arquivo
+    // do StoneProfits com espaço/[]/() na URL do S3).
+    let key = expr.trim();
+    let urlEncode = false;
+    if (key.endsWith('|url')) { key = key.slice(0, -4).trim(); urlEncode = true; }
+    const v = getPath(row, key);
+    if (v == null) return '';
+    return urlEncode ? encodeURIComponent(String(v)) : String(v);
   });
   return out === '' ? null : out; // template vazio -> NULL (não string vazia)
 }
@@ -102,7 +108,7 @@ function pickRowValues(row, colMap, constants) {
     const s = String(srcPath);
     if (s.includes('{{')) {
       // template: marca TODOS os campos referenciados como usados
-      for (const m of s.matchAll(/\{\{([^}]+)\}\}/g)) usedTops.add(topKey(m[1].trim()));
+      for (const m of s.matchAll(/\{\{([^}]+)\}\}/g)) usedTops.add(topKey(m[1].trim().split('|')[0].trim()));
     } else {
       usedTops.add(topKey(s));
     }
@@ -157,7 +163,7 @@ async function persistSaveRows(client, action, state, ctx) {
   const colList = allCols.map(quoteIdent).join(', ');
 
   // Snapshots: colunas conhecidas
-  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit','payload'];
+  const snapCols = ['scraper_id','job_id','source_key','item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','image_url','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit','payload'];
 
   const BATCH = 500;
   let inserted = 0;
@@ -195,7 +201,7 @@ async function persistSaveRows(client, action, state, ctx) {
         snapParams.push(ctx.scraperId); sp.push(`$${snapParams.length}`);
         snapParams.push(ctx.jobId);     sp.push(`$${snapParams.length}`);
         snapParams.push(sourceKey);     sp.push(`$${snapParams.length}`);
-        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit']) {
+        for (const k of ['item_id','item_name','category_name','serial_number','bundle','color','location','thickness','finish','image_url','available_qty','available_slabs','price','price_range','on_hold','on_so','in_transit']) {
           snapParams.push(vals[k] === undefined ? null : vals[k]);
           sp.push(`$${snapParams.length}`);
         }

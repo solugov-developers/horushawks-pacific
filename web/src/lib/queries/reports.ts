@@ -14,6 +14,7 @@ export const REPORT_COLUMNS = [
   'location',
   'thickness',
   'finish',
+  'image_url',
   'available_qty',
   'available_slabs',
   'price',
@@ -60,6 +61,7 @@ export async function queryInventoryReport(opts: QueryOpts): Promise<ReportRow[]
       h.location,
       h.thickness,
       h.finish,
+      h.image_url,
       h.available_qty,
       h.available_slabs,
       h.price,
@@ -106,7 +108,7 @@ export async function* streamInventoryRows(
        SELECT
          s.name AS scraper_name, h.scraped_at, h.source_key, h.item_id, h.item_name,
          h.category_name, h.serial_number, h.bundle, h.color, h.location, h.thickness,
-         h.available_qty, h.available_slabs, h.price, h.price_range,
+         h.finish, h.image_url, h.available_qty, h.available_slabs, h.price, h.price_range,
          h.on_hold, h.on_so, h.in_transit
        FROM slabs_history h
        JOIN scrapers s ON s.id = h.scraper_id
