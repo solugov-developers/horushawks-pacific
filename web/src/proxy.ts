@@ -8,7 +8,11 @@ export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Estáticos / next internals — não interceptar
-  if (pathname.startsWith('/_next') || pathname.startsWith('/api/auth')) {
+  if (
+    pathname.startsWith('/_next') ||
+    pathname.startsWith('/api/auth') ||
+    pathname.startsWith('/api/mobile') // Bearer token, ver lib/mobile/auth.ts
+  ) {
     return NextResponse.next();
   }
 
