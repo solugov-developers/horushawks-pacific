@@ -88,6 +88,7 @@ function topKey(srcPath) {
 function resolveSrc(row, srcPath) {
   const s = String(srcPath);
   if (!s.includes('{{')) return getPath(row, s);
+  let anyValue = false;
   const out = s.replace(/\{\{([^}]+)\}\}/g, (_, expr) => {
     // filtro opcional "campo|url" -> URL-encode do valor (ex.: nome de arquivo
     // do StoneProfits com espaço/[]/() na URL do S3).
@@ -95,10 +96,13 @@ function resolveSrc(row, srcPath) {
     let urlEncode = false;
     if (key.endsWith('|url')) { key = key.slice(0, -4).trim(); urlEncode = true; }
     const v = getPath(row, key);
-    if (v == null) return '';
+    if (v == null || v === '') return '';
+    anyValue = true;
     return urlEncode ? encodeURIComponent(String(v)) : String(v);
   });
-  return out === '' ? null : out; // template vazio -> NULL (não string vazia)
+  // se NENHUM placeholder resolveu (só sobraria o literal, ex.: base do S3 sem
+  // o nome do arquivo -> URL quebrada), a linha não tem o dado -> NULL.
+  return anyValue ? out : null;
 }
 
 function pickRowValues(row, colMap, constants) {
