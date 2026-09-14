@@ -313,15 +313,19 @@ export async function getErpFinance(): Promise<ErpFinance> {
   ]);
   const t = totals[0] ?? {};
   const d1 = usd(t.d1_30), d2 = usd(t.d31_60), d3 = usd(t.d61_90), d4 = usd(t.d90plus);
+  const total = usd(t.total), current = usd(t.current);
+  // credits derivado dos valores já arredondados: garante a identidade
+  // current + faixas + credits = total mesmo com arredondamento por campo.
+  const credits = total - (current + d1 + d2 + d3 + d4);
 
   return {
     asOf: dayOf(t.snapshot) ?? '',
     stale: false,
     receivable: {
-      total: usd(t.total), current: usd(t.current),
+      total, current,
       d1_30: d1, d31_60: d2, d61_90: d3, d90plus: d4,
       overdue: d1 + d2 + d3 + d4,
-      credits: usd(t.credits),
+      credits,
       customers: int(t.customers),
     },
     topOverdue: top.map(x => ({
