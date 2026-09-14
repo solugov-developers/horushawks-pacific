@@ -89,3 +89,25 @@ services:
       resources:
         limits:
           memory: 250M
+
+  # Pipeline de imagens (job pontual, NÃO sobe no `up` — profile "pipeline").
+  # Rodar detached:  docker compose --profile pipeline run -d --rm imgpipe
+  imgpipe:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    profiles: ["pipeline"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      S3_BUCKET: ${S3_BUCKET}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 400M
