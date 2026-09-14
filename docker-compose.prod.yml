@@ -78,6 +78,11 @@ services:
       PANEL_PASSWORD: ${PANEL_PASSWORD}
       PANEL_API_TOKEN: ${PANEL_API_TOKEN}
       PORT: "3000"
+      S3_BUCKET: ${S3_BUCKET}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://app.horushawks.com}
     depends_on:
       postgres:
         condition: service_healthy

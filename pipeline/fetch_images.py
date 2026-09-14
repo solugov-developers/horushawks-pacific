@@ -22,6 +22,12 @@ UA       = "Mozilla/5.0 (compatible; HorusHawksImagePipeline/1.0)"
 s3 = boto3.client("s3", region_name=REGION)
 db = psycopg2.connect(DSN); db.autocommit = True
 
+def reconnect():
+    global db
+    try: db.close()
+    except Exception: pass
+    db = psycopg2.connect(DSN); db.autocommit = True
+
 
 def ensure_table():
     with db.cursor() as c:
@@ -70,10 +76,16 @@ def autocrop(im):
     return im.crop((max(0, ax - p), max(0, ay - p), min(W, bx + p), min(H, by + p)))
 
 
+Image.MAX_IMAGE_PIXELS = 60_000_000  # rejeita bomba de descompressão (vira 'failed')
+
 def process(url):
     r = requests.get(url, timeout=30, headers={"User-Agent": UA})
     r.raise_for_status()
-    im = Image.open(io.BytesIO(r.content)).convert("RGB")
+    im = Image.open(io.BytesIO(r.content))
+    im.draft("RGB", (2000, 2000))          # decode JPEG já reduzido (bounda memória)
+    im = im.convert("RGB")
+    if max(im.size) > 2000:                # limita antes do numpy/crop -> sem OOM
+        im.thumbnail((2000, 2000), Image.LANCZOS)
     im = autocrop(im)
     ratio = THUMB_W / im.size[0]
     im = im.resize((THUMB_W, max(1, round(im.size[1] * ratio))), Image.LANCZOS)
@@ -112,7 +124,12 @@ def main():
             key, w, h, n = process(url)
             mark_done(url, key, w, h, n); ok += 1
         except Exception as e:
-            mark_failed(url, e); fail += 1
+            try:
+                mark_failed(url, e); fail += 1
+            except Exception:
+                reconnect()                       # blip de DB não derruba o job
+                try: mark_failed(url, e); fail += 1
+                except Exception: pass
         if i % 100 == 0 or i == total:
             print(f"[imgpipe] {i}/{total} ok={ok} fail={fail}", flush=True)
         time.sleep(SLEEP)

@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1131.0",
     "@types/d3-geo": "^3.1.0",
     "@types/topojson-client": "^3.1.5",
     "bcrypt": "^6.0.0",
