@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { withToken, bad } from '@/lib/mobile/auth';
+import { withToken, bad, OPTIONS } from '@/lib/mobile/auth';
 import { getMobileMaterial } from '@/lib/queries/mobile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export { OPTIONS };
 
 export const GET = withToken<{ params: Promise<{ name: string }> }>(async (_req, ctx) => {
   const { name } = await ctx.params;

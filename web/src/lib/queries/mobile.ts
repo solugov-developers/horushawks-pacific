@@ -197,10 +197,20 @@ export async function getMobileSales(period: number, source?: string | null): Pr
 }
 
 /* ------------------------------------------------------------------ */
+/* Imagem: thumb_key (S3, via image_assets) -> URL do proxy /thumb     */
+/* ------------------------------------------------------------------ */
+const IMG_BASE = process.env.APP_PUBLIC_URL ?? 'https://app.horushawks.com';
+function thumbUrl(thumbKey: unknown): string | null {
+  if (typeof thumbKey !== 'string') return null;
+  const m = /thumbs\/([0-9a-f]+)\.jpg$/.exec(thumbKey);
+  return m ? `${IMG_BASE}/api/mobile/v1/thumb/${m[1]}` : null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Inventory (snapshot atual agrupado por material)                    */
 /* ------------------------------------------------------------------ */
 
-export interface InventoryRow { itemName: string; category: string | null; slabs: number; onHold: number; sources: string[]; locations: string[] }
+export interface InventoryRow { itemName: string; category: string | null; slabs: number; onHold: number; sources: string[]; locations: string[]; imageUrl: string | null }
 export interface Inventory {
   totalSlabs: number; totalMaterials: number; page: number; pageSize: number;
   sources: { slug: string; label: string }[]; rows: InventoryRow[];
@@ -218,8 +228,10 @@ export async function getMobileInventory(opts: { q?: string | null; source?: str
                count(*)::int AS slabs,
                count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
-               array_agg(DISTINCT sh.location ORDER BY sh.location) FILTER (WHERE sh.location IS NOT NULL) AS locations
+               array_agg(DISTINCT sh.location ORDER BY sh.location) FILTER (WHERE sh.location IS NOT NULL) AS locations,
+               (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+        LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
         WHERE 1 = 1${q}
         GROUP BY sh.item_name
       )
@@ -239,6 +251,7 @@ export async function getMobileInventory(opts: { q?: string | null; source?: str
       slabs: num(r.slabs), onHold: num(r.on_hold),
       sources: ((r.sources as string[]) ?? []).map(sourceLabel),
       locations: (r.locations as string[]) ?? [],
+      imageUrl: thumbUrl(r.thumb_key),
     })),
   };
 }
@@ -249,7 +262,7 @@ export async function getMobileInventory(opts: { q?: string | null; source?: str
 
 export interface HistoryRow { date: string; kind: string; count: number; source: string; location: string | null; detail: string | null }
 export interface MaterialDetail {
-  itemName: string; category: string | null;
+  itemName: string; category: string | null; imageUrl: string | null;
   slabs: number; available: number; onHold: number; onHoldPct: number;
   arrived30d: number; removed30d: number;
   sources: { slug: string; label: string; slabs: number; locations: string[]; thicknesses: string[] }[];
@@ -265,8 +278,10 @@ export async function getMobileMaterial(itemName: string): Promise<MaterialDetai
              count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
              mode() WITHIN GROUP (ORDER BY sh.category_name) FILTER (WHERE sh.category_name <> '') AS category,
              array_agg(DISTINCT sh.location ORDER BY sh.location) FILTER (WHERE sh.location IS NOT NULL) AS locations,
-             array_agg(DISTINCT sh.thickness ORDER BY sh.thickness) FILTER (WHERE sh.thickness IS NOT NULL AND sh.thickness <> '') AS thicknesses
+             array_agg(DISTINCT sh.thickness ORDER BY sh.thickness) FILTER (WHERE sh.thickness IS NOT NULL AND sh.thickness <> '') AS thicknesses,
+             (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
       FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+      LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
       WHERE sh.item_name = ${itemName}
       GROUP BY l.name ORDER BY slabs DESC
     `),
@@ -304,8 +319,10 @@ export async function getMobileMaterial(itemName: string): Promise<MaterialDetai
   const onHold = perSource.rows.reduce((a, r) => a + num(r.on_hold), 0);
   const category = (perSource.rows.find(r => r.category)?.category as string | undefined) ?? null;
 
+  const imageUrl = thumbUrl(perSource.rows.map(r => r.thumb_key).find(k => k));
+
   return {
-    itemName, category,
+    itemName, category, imageUrl,
     slabs, available: slabs - onHold, onHold, onHoldPct: pct(onHold, slabs),
     arrived30d: num(moves.rows[0]?.added), removed30d: num(moves.rows[0]?.removed),
     sources,

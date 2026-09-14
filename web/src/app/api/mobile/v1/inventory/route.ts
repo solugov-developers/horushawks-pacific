@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { withToken, intParam } from '@/lib/mobile/auth';
+import { withToken, intParam, OPTIONS } from '@/lib/mobile/auth';
 import { getMobileInventory } from '@/lib/queries/mobile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export { OPTIONS };
 
 export const GET = withToken(async (req) => {
   const sp = req.nextUrl.searchParams;

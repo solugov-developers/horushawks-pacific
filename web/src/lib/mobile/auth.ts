@@ -27,18 +27,39 @@ export async function authenticate(req: NextRequest): Promise<ApiToken | null> {
 
 type Handler<C> = (req: NextRequest, ctx: C, token: ApiToken) => Promise<Response>;
 
-/** Envolve um route handler: 401 sem token válido, 500 com JSON em erro inesperado. */
+/**
+ * CORS: o app nativo não precisa, mas a versão web (Expo no navegador) sim.
+ * A API é só leitura e protegida por Bearer, então liberar qualquer origem é seguro.
+ */
+const CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+  'Access-Control-Max-Age': '86400',
+};
+
+function withCors(res: Response): Response {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
+  return res;
+}
+
+/** Preflight — exporte como `OPTIONS` em cada route.ts da API mobile. */
+export async function OPTIONS(): Promise<Response> {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/** Envolve um route handler: 401 sem token válido, 500 com JSON em erro inesperado, CORS em tudo. */
 export function withToken<C>(handler: Handler<C>) {
   return async (req: NextRequest, ctx: C): Promise<Response> => {
     const token = await authenticate(req);
     if (!token) {
-      return NextResponse.json({ error: 'token inválido ou ausente' }, { status: 401 });
+      return withCors(NextResponse.json({ error: 'token inválido ou ausente' }, { status: 401 }));
     }
     try {
-      return await handler(req, ctx, token);
+      return withCors(await handler(req, ctx, token));
     } catch (err) {
       console.error('[api/mobile]', err);
-      return NextResponse.json({ error: 'erro interno' }, { status: 500 });
+      return withCors(NextResponse.json({ error: 'erro interno' }, { status: 500 }));
     }
   };
 }

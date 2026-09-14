@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { withToken, bad } from '@/lib/mobile/auth';
+import { withToken, bad, OPTIONS } from '@/lib/mobile/auth';
 import { getMobileSales } from '@/lib/queries/mobile';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export { OPTIONS };
 
 const PERIODS = [7, 30, 90];
 
