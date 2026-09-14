@@ -72,6 +72,8 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # RDS do ERP (somente leitura). Vazio = /status responde erp: null.
+      ERP_DATABASE_URL: ${ERP_DATABASE_URL:-}
       AUTH_SECRET: ${AUTH_SECRET}
       PANEL_URL: http://panel:3000
       PANEL_USER: ${PANEL_USER}
