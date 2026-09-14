@@ -286,12 +286,12 @@ ORDER BY d90plus DESC, balance DESC
 LIMIT 10`;
 
 /**
- * Recebimentos do dia: fonte = eod_receipts_deposits via a view erp.receipts
- * (snapshot_date, receipt_date date, receipt_number, customer, location,
- * method, amount numeric), pedida ao StoneProfits. erp.payments
- * (payments_all_methods) é dinheiro que SAI (Vendor/Supplier/Customer =
- * reembolsos) e não serve. Enquanto a view não existir: received = null.
- * `date` = último dia com recebimento até o snapshot; mtd até esse dia.
+ * Recebimentos: view erp.receipts (eod_receipts_deposits; type Receipt/Deposit/
+ * Refund com amount negativo, 194 linhas sem valor = NULL). erp.payments
+ * (payments_all_methods) é dinheiro que SAI e não serve. Se a view sumir:
+ * received = null. Regras: date = max(receipt_date) (um dia atrás do
+ * snapshot, como sales); total = soma líquida do dia (refund negativo);
+ * count = linhas com amount não nulo; mtd = soma do mês de receipt_date.
  */
 const RECEIPTS_VIEW = 'erp.receipts';
 const RECEIPTS_SQL = `
@@ -302,7 +302,7 @@ WITH base AS (
 d AS (SELECT max(receipt_date) AS day FROM base)
 SELECT (SELECT day FROM d) AS day,
        coalesce(sum(amount) FILTER (WHERE receipt_date = d.day), 0) AS total,
-       count(*) FILTER (WHERE receipt_date = d.day)                  AS n,
+       count(amount) FILTER (WHERE receipt_date = d.day)             AS n,   -- só linhas com valor
        coalesce(sum(amount) FILTER (WHERE receipt_date >= date_trunc('month', d.day)::date
                                       AND receipt_date <= d.day), 0) AS mtd
 FROM base, d`;
