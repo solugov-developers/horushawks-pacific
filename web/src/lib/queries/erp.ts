@@ -110,8 +110,9 @@ const NOT_RECEIVED = `coalesce(status, '') !~* 'receiv|closed|cancel'`;
 /**
  * Vendas: só faturas com sale_date <= snapshot_date (o ERP tem faturas
  * pós-datadas; ficam fora até a data chegar). `date` = último dia COMPLETO
- * = snapshot_date - 1 (a coleta roda às 06:00 BRT; o próprio snapshot_date
- * só tem vendas da madrugada). sameWeekdayLastWeek = date - 7.
+ * com vendas: sale_date <= snapshot_date - 1 e total > 0 (a coleta roda às
+ * 06:00 BRT, o próprio snapshot_date só tem vendas da madrugada; domingos e
+ * feriados sem faturas são pulados). sameWeekdayLastWeek = date - 7.
  */
 const SALES_SQL = `
 WITH base AS (
@@ -119,7 +120,12 @@ WITH base AS (
   FROM erp.sales_lines
   WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date
 ),
-d AS (SELECT (max(snapshot_date) - 1)::date AS day FROM erp.sales_lines),
+d AS (
+  SELECT max(sale_date) AS day FROM base
+  WHERE sale_date <= (SELECT max(snapshot_date) FROM erp.sales_lines) - 1
+  GROUP BY sale_date HAVING sum(sale_total) > 0
+  ORDER BY 1 DESC LIMIT 1
+),
 agg AS (
   SELECT
     (SELECT day FROM d) AS day,
@@ -139,9 +145,10 @@ const KPI_SQL = `
 SELECT
   (SELECT count(DISTINCT so) FROM erp.on_so)                                           AS open_so,
   (SELECT coalesce(sum(total_price), 0) FROM erp.on_so)                                AS open_so_value,
-  (SELECT coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0))
-                   FILTER (WHERE balance_due > 0), 0)
-     FROM erp.ar_aging)                                                                AS ar_overdue,
+  (SELECT coalesce(sum(d1_30)  FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging)  AS ar_d1_30,
+  (SELECT coalesce(sum(d31_60) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging)  AS ar_d31_60,
+  (SELECT coalesce(sum(d61_90) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging)  AS ar_d61_90,
+  (SELECT coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_d90plus,
   (SELECT coalesce(sum(balance_due), 0) FROM erp.ar_aging)                             AS ar_total,
   (SELECT coalesce(sum(asset_value), 0) FROM erp.stock)                                AS inv_value,
   (SELECT coalesce(sum(available_slabs), 0) FROM erp.stock WHERE ${SLAB_ITEMS})       AS inv_slabs,
@@ -215,7 +222,9 @@ export async function getErpToday(): Promise<ErpToday> {
     },
     kpis: {
       openSalesOrders: int(k.open_so), openSalesOrdersValue: usd(k.open_so_value),
-      receivableOverdue: usd(k.ar_overdue), receivableTotal: usd(k.ar_total),
+      // mesma conta do /erp/finance: faixas arredondadas uma a uma e somadas
+      receivableOverdue: usd(k.ar_d1_30) + usd(k.ar_d31_60) + usd(k.ar_d61_90) + usd(k.ar_d90plus),
+      receivableTotal: usd(k.ar_total),
       inventoryValue: usd(k.inv_value), inventorySlabs: int(k.inv_slabs),
       inTransitSlabs: int(k.transit_slabs), inTransitContainers: int(k.transit_containers),
     },
@@ -238,7 +247,7 @@ export interface ErpFinance {
     overdue: number; credits: number; customers: number;
   };
   topOverdue: { customer: string; code: string | null; balance: number; d90plus: number; location: string | null; salesRep: string | null }[];
-  /** null enquanto não existir a view erp de eod_receipts_deposits. */
+  /** null enquanto não existir a view erp.receipts (eod_receipts_deposits). */
   received: { date: string | null; total: number; count: number; mtd: number } | null;
   byLocation: { code: string; label: string; receivable: number; overdue: number }[];
   bankTransfers7d: { date: string | null; from: string | null; to: string | null; amount: number }[];
@@ -277,13 +286,34 @@ ORDER BY d90plus DESC, balance DESC
 LIMIT 10`;
 
 /**
- * Recebimentos do dia: a fonte do contrato é eod_receipts_deposits, que ainda
- * NÃO tem view em erp.* (pedido ao StoneProfits). erp.payments (payments_all_methods)
- * é dinheiro que SAI (Vendor/Supplier/Customer = reembolsos), não serve.
- * Até a view existir: received = null.
+ * Recebimentos do dia: fonte = eod_receipts_deposits via a view erp.receipts
+ * (snapshot_date, receipt_date date, receipt_number, customer, location,
+ * method, amount numeric), pedida ao StoneProfits. erp.payments
+ * (payments_all_methods) é dinheiro que SAI (Vendor/Supplier/Customer =
+ * reembolsos) e não serve. Enquanto a view não existir: received = null.
+ * `date` = último dia com recebimento até o snapshot; mtd até esse dia.
  */
+const RECEIPTS_VIEW = 'erp.receipts';
+const RECEIPTS_SQL = `
+WITH base AS (
+  SELECT receipt_date, amount FROM ${RECEIPTS_VIEW}
+  WHERE receipt_date IS NOT NULL AND receipt_date <= snapshot_date
+),
+d AS (SELECT max(receipt_date) AS day FROM base)
+SELECT (SELECT day FROM d) AS day,
+       coalesce(sum(amount) FILTER (WHERE receipt_date = d.day), 0) AS total,
+       count(*) FILTER (WHERE receipt_date = d.day)                  AS n,
+       coalesce(sum(amount) FILTER (WHERE receipt_date >= date_trunc('month', d.day)::date
+                                      AND receipt_date <= d.day), 0) AS mtd
+FROM base, d`;
+
 async function receivedFromView(): Promise<ErpFinance['received']> {
-  return null; // TODO: ler da view erp de eod_receipts_deposits quando o StoneProfits a publicar
+  const exists = await erpQuery<{ ok: unknown }>('SELECT to_regclass($1) AS ok', [RECEIPTS_VIEW]);
+  if (!exists[0]?.ok) return null;
+  const rows = await erpQuery(RECEIPTS_SQL);
+  const r = rows[0] ?? {};
+  if (!r.day) return null;
+  return { date: dayOf(r.day), total: usd(r.total), count: int(r.n), mtd: usd(r.mtd) };
 }
 
 const AR_BY_LOCATION_SQL = `
