@@ -97,12 +97,21 @@ export interface ErpToday {
 const ATTENTION_MAX = 6;
 const OVERDUE_90_MIN = 50_000;
 
+/**
+ * Itens de chapa em erp.stock: type SLAB (pedra natural, SF) e Quartz (chapas
+ * de quartzo, EA). Nunca quantity em SF; tiles, ferramentas, pias etc. ficam
+ * fora. available_slabs já é NULL para on_hold/on_so.
+ */
+const SLAB_ITEMS = `coalesce(kind, '') !~* 'non stock' AND coalesce(type, '') ~* '^(slab|quartz)$'`;
+
 /** Filtro de "ainda não recebido" para in_transit (status é texto livre do ERP). */
 const NOT_RECEIVED = `coalesce(status, '') !~* 'receiv|closed|cancel'`;
 
 /**
  * Vendas: só faturas com sale_date <= snapshot_date (o ERP tem faturas
- * pós-datadas; ficam fora até a data chegar). `date` = último dia com vendas.
+ * pós-datadas; ficam fora até a data chegar). `date` = último dia COMPLETO
+ * = snapshot_date - 1 (a coleta roda às 06:00 BRT; o próprio snapshot_date
+ * só tem vendas da madrugada). sameWeekdayLastWeek = date - 7.
  */
 const SALES_SQL = `
 WITH base AS (
@@ -110,7 +119,7 @@ WITH base AS (
   FROM erp.sales_lines
   WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date
 ),
-d AS (SELECT max(sale_date) AS day FROM base),
+d AS (SELECT (max(snapshot_date) - 1)::date AS day FROM erp.sales_lines),
 agg AS (
   SELECT
     (SELECT day FROM d) AS day,
@@ -130,22 +139,23 @@ const KPI_SQL = `
 SELECT
   (SELECT count(DISTINCT so) FROM erp.on_so)                                           AS open_so,
   (SELECT coalesce(sum(total_price), 0) FROM erp.on_so)                                AS open_so_value,
-  (SELECT coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0)), 0)
+  (SELECT coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0))
+                   FILTER (WHERE balance_due > 0), 0)
      FROM erp.ar_aging)                                                                AS ar_overdue,
   (SELECT coalesce(sum(balance_due), 0) FROM erp.ar_aging)                             AS ar_total,
   (SELECT coalesce(sum(asset_value), 0) FROM erp.stock)                                AS inv_value,
-  (SELECT coalesce(sum(instock_qty), 0) FROM erp.stock
-     WHERE coalesce(units, '') ~* 'slab' OR coalesce(serial, '') <> '')                 AS inv_slabs,
+  (SELECT coalesce(sum(available_slabs), 0) FROM erp.stock WHERE ${SLAB_ITEMS})       AS inv_slabs,
   (SELECT coalesce(sum(slabs), 0) FROM erp.in_transit WHERE ${NOT_RECEIVED})           AS transit_slabs,
   (SELECT count(DISTINCT container) FROM erp.in_transit
      WHERE ${NOT_RECEIVED} AND coalesce(btrim(container), '') <> '')                    AS transit_containers`;
 
 const OVERDUE_CUSTOMERS_SQL = `
-SELECT customer, customer_code,
-       coalesce(sum(d90plus), 0) AS d90plus, coalesce(sum(balance_due), 0) AS balance
+SELECT customer, max(nullif(btrim(customer_code), '')) AS customer_code,
+       coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) AS d90plus,
+       coalesce(sum(balance_due), 0) AS balance
 FROM erp.ar_aging
-GROUP BY customer, customer_code
-HAVING coalesce(sum(d90plus), 0) > $1
+GROUP BY customer
+HAVING coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) > $1
 ORDER BY d90plus DESC, balance DESC
 LIMIT $2`;
 
@@ -225,55 +235,62 @@ export interface ErpFinance {
   asOf: string; stale: boolean;
   receivable: {
     total: number; current: number; d1_30: number; d31_60: number; d61_90: number; d90plus: number;
-    overdue: number; customers: number;
+    overdue: number; credits: number; customers: number;
   };
   topOverdue: { customer: string; code: string | null; balance: number; d90plus: number; location: string | null; salesRep: string | null }[];
-  received: { date: string | null; total: number; count: number; mtd: number };
+  /** null enquanto não existir a view erp de eod_receipts_deposits. */
+  received: { date: string | null; total: number; count: number; mtd: number } | null;
   byLocation: { code: string; label: string; receivable: number; overdue: number }[];
   bankTransfers7d: { date: string | null; from: string | null; to: string | null; amount: number }[];
 }
 
+/**
+ * Faixas de aging só com saldos positivos (balance_due > 0). Linhas negativas
+ * (Deposit, Receipt, Return Order, Credit Memo, Journal…) viram `credits`, de
+ * modo que current + d1_30 + d31_60 + d61_90 + d90plus + credits = total.
+ * Verificado no snapshot 2026-09-14: nenhuma linha mista (saldo positivo com
+ * faixa negativa).
+ */
 const AR_TOTALS_SQL = `
 SELECT max(snapshot_date) AS snapshot,
-       coalesce(sum(balance_due), 0) AS total,
-       coalesce(sum("current"), 0)   AS current,
-       coalesce(sum(d1_30), 0)       AS d1_30,
-       coalesce(sum(d31_60), 0)      AS d31_60,
-       coalesce(sum(d61_90), 0)      AS d61_90,
-       coalesce(sum(d90plus), 0)     AS d90plus,
-       count(DISTINCT coalesce(nullif(btrim(customer_code), ''), customer)) AS customers
+       coalesce(sum(balance_due), 0)                                 AS total,
+       coalesce(sum("current") FILTER (WHERE balance_due > 0), 0)    AS current,
+       coalesce(sum(d1_30)     FILTER (WHERE balance_due > 0), 0)    AS d1_30,
+       coalesce(sum(d31_60)    FILTER (WHERE balance_due > 0), 0)    AS d31_60,
+       coalesce(sum(d61_90)    FILTER (WHERE balance_due > 0), 0)    AS d61_90,
+       coalesce(sum(d90plus)   FILTER (WHERE balance_due > 0), 0)    AS d90plus,
+       coalesce(sum(balance_due) FILTER (WHERE balance_due <= 0), 0) AS credits,
+       count(DISTINCT customer)                                      AS customers
 FROM erp.ar_aging`;
 
+/** Por cliente: saldo líquido (inclui créditos), 90+ só das linhas positivas; code = customer_code do ERP (vazio em parte das linhas, por isso max por cliente). */
 const TOP_OVERDUE_SQL = `
-SELECT customer, customer_code,
-       coalesce(sum(balance_due), 0) AS balance, coalesce(sum(d90plus), 0) AS d90plus,
-       mode() WITHIN GROUP (ORDER BY location)  AS location,
-       mode() WITHIN GROUP (ORDER BY sales_rep) AS sales_rep
+SELECT customer, max(nullif(btrim(customer_code), '')) AS customer_code,
+       coalesce(sum(balance_due), 0) AS balance,
+       coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) AS d90plus,
+       mode() WITHIN GROUP (ORDER BY location)  FILTER (WHERE coalesce(btrim(location), '') <> '')  AS location,
+       mode() WITHIN GROUP (ORDER BY sales_rep) FILTER (WHERE coalesce(btrim(sales_rep), '') <> '') AS sales_rep
 FROM erp.ar_aging
-GROUP BY customer, customer_code
-HAVING coalesce(sum(d90plus), 0) > 0 OR coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)), 0) > 0
+GROUP BY customer
+HAVING coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) > 0
 ORDER BY d90plus DESC, balance DESC
 LIMIT 10`;
 
-/** Recebimentos = payments type=Customer, até o snapshot (sem pós-datados). */
-const RECEIVED_SQL = `
-WITH base AS (
-  SELECT payment_date, payment_amt
-  FROM erp.payments
-  WHERE coalesce(type, '') ~* 'customer' AND payment_date IS NOT NULL AND payment_date <= snapshot_date
-),
-d AS (SELECT max(payment_date) AS day FROM base)
-SELECT (SELECT day FROM d) AS day,
-       coalesce(sum(payment_amt) FILTER (WHERE payment_date = d.day), 0) AS total,
-       count(*) FILTER (WHERE payment_date = d.day)                       AS n,
-       coalesce(sum(payment_amt) FILTER (WHERE payment_date >= date_trunc('month', d.day)::date
-                                           AND payment_date <= d.day), 0) AS mtd
-FROM base, d`;
+/**
+ * Recebimentos do dia: a fonte do contrato é eod_receipts_deposits, que ainda
+ * NÃO tem view em erp.* (pedido ao StoneProfits). erp.payments (payments_all_methods)
+ * é dinheiro que SAI (Vendor/Supplier/Customer = reembolsos), não serve.
+ * Até a view existir: received = null.
+ */
+async function receivedFromView(): Promise<ErpFinance['received']> {
+  return null; // TODO: ler da view erp de eod_receipts_deposits quando o StoneProfits a publicar
+}
 
 const AR_BY_LOCATION_SQL = `
 SELECT coalesce(nullif(btrim(location), ''), '(sem loja)') AS code,
        coalesce(sum(balance_due), 0) AS receivable,
-       coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0)), 0) AS overdue
+       coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0))
+                FILTER (WHERE balance_due > 0), 0) AS overdue
 FROM erp.ar_aging
 GROUP BY 1
 ORDER BY receivable DESC`;
@@ -289,13 +306,12 @@ export async function getErpFinance(): Promise<ErpFinance> {
   const [totals, top, received, byLoc, transfers, labels] = await Promise.all([
     erpQuery(AR_TOTALS_SQL),
     erpQuery(TOP_OVERDUE_SQL),
-    erpQuery(RECEIVED_SQL),
+    receivedFromView(),
     erpQuery(AR_BY_LOCATION_SQL),
     erpQuery(BANK_TRANSFERS_SQL),
     locationLabels(),
   ]);
   const t = totals[0] ?? {};
-  const r = received[0] ?? {};
   const d1 = usd(t.d1_30), d2 = usd(t.d31_60), d3 = usd(t.d61_90), d4 = usd(t.d90plus);
 
   return {
@@ -305,6 +321,7 @@ export async function getErpFinance(): Promise<ErpFinance> {
       total: usd(t.total), current: usd(t.current),
       d1_30: d1, d31_60: d2, d61_90: d3, d90plus: d4,
       overdue: d1 + d2 + d3 + d4,
+      credits: usd(t.credits),
       customers: int(t.customers),
     },
     topOverdue: top.map(x => ({
@@ -314,7 +331,7 @@ export async function getErpFinance(): Promise<ErpFinance> {
       location: (x.location as string | null) ?? null,
       salesRep: (x.sales_rep as string | null) ?? null,
     })),
-    received: { date: dayOf(r.day), total: usd(r.total), count: int(r.n), mtd: usd(r.mtd) },
+    received,
     byLocation: byLoc.map(x => ({
       code: String(x.code), label: labelOf(labels, String(x.code)),
       receivable: usd(x.receivable), overdue: usd(x.overdue),
