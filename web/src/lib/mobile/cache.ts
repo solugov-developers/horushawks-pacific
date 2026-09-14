@@ -107,6 +107,23 @@ export async function respondCached<T extends object>(
   return jsonCached(out.body);
 }
 
+/**
+ * Para rotas cuja única fonte é o RDS do ERP: fonte fora e sem payload
+ * anterior => 503 com mensagem (o app mostra "ERP indisponível" e usa o cache
+ * local), em vez do 500 genérico do withToken.
+ */
+export async function respondCachedOr503<T extends object>(
+  req: NextRequest,
+  fetcher: () => Promise<T>,
+): Promise<NextResponse> {
+  try {
+    return (await respondCached(req, fetcher))!;
+  } catch (err) {
+    console.error('[api/mobile] ERP indisponível sem cache:', req.nextUrl.pathname, err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: 'ERP indisponível' }, { status: 503, headers: { 'Retry-After': '60' } });
+  }
+}
+
 /** Só para testes/diagnóstico. */
 export function clearMobileCache(): void {
   store.clear();
