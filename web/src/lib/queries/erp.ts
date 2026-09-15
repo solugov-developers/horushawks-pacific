@@ -383,3 +383,207 @@ export async function getErpFinance(): Promise<ErpFinance> {
     })),
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* /erp/sales                                                          */
+/* ------------------------------------------------------------------ */
+
+export const SALES_PERIODS = ['day', 'month', 'year'] as const;
+export const SALES_GROUPS = ['location', 'rep', 'material'] as const;
+export type SalesPeriod = typeof SALES_PERIODS[number];
+export type SalesGroup = typeof SALES_GROUPS[number];
+
+export interface ErpSalesRow { key: string; label: string; total: number; slabs: number; orders: number; marginPct: number; sharePct: number }
+export interface ErpSales {
+  asOf: string; stale: boolean; period: SalesPeriod; groupBy: SalesGroup;
+  total: number; prevTotal: number | null; deltaPct: number | null; slabs: number; orders: number;
+  avgTicket: number; avgTicketPrev: number | null; avgTicketDeltaPct: number | null; marginPct: number;
+  rows: ErpSalesRow[];
+}
+
+/**
+ * Janelas por período, ancoradas em D = último dia completo com vendas (o
+ * mesmo `sales.date` do /erp/today):
+ *  day   : [D, D]                       vs [D-7, D-7]
+ *  month : [início do mês de D, D]      vs mês anterior completo
+ *  year  : [1/jan do ano de D, D]       vs [1/jan do ano anterior, D - 1 ano]
+ * Faturas pós-datadas (sale_date > snapshot_date) ficam fora.
+ */
+const SALES_WINDOW_SQL = `
+WITH snap AS (SELECT max(snapshot_date) AS snapshot FROM erp.sales_lines),
+d AS (
+  SELECT sale_date AS day FROM erp.sales_lines, snap
+  WHERE sale_date IS NOT NULL AND sale_date <= snap.snapshot - 1
+  GROUP BY sale_date HAVING sum(sale_total) > 0
+  ORDER BY sale_date DESC LIMIT 1
+)
+SELECT snap.snapshot, d.day,
+  CASE $1 WHEN 'day' THEN d.day
+          WHEN 'month' THEN date_trunc('month', d.day)::date
+          ELSE date_trunc('year', d.day)::date END                                   AS cur_from,
+  d.day                                                                              AS cur_to,
+  CASE $1 WHEN 'day' THEN d.day - 7
+          WHEN 'month' THEN date_trunc('month', d.day - interval '1 month')::date
+          ELSE date_trunc('year', d.day - interval '1 year')::date END               AS prev_from,
+  CASE $1 WHEN 'day' THEN d.day - 7
+          WHEN 'month' THEN (date_trunc('month', d.day) - interval '1 day')::date
+          ELSE (d.day - interval '1 year')::date END                                 AS prev_to
+FROM snap LEFT JOIN d ON true`;
+
+const SALES_TOTALS_SQL = `
+SELECT
+  coalesce(sum(sale_total) FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS total,
+  coalesce(sum(slabs)      FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS slabs,
+  count(DISTINCT invoice)  FILTER (WHERE sale_date BETWEEN $1 AND $2)     AS orders,
+  coalesce(sum(margin)     FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS margin,
+  count(*)                 FILTER (WHERE sale_date BETWEEN $3 AND $4)     AS prev_rows,
+  coalesce(sum(sale_total) FILTER (WHERE sale_date BETWEEN $3 AND $4), 0) AS prev_total,
+  count(DISTINCT invoice)  FILTER (WHERE sale_date BETWEEN $3 AND $4)     AS prev_orders
+FROM erp.sales_lines
+WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date`;
+
+/** Expressão de agrupamento por groupBy (whitelist; nunca vem do usuário direto). */
+const SALES_GROUP_EXPR: Record<SalesGroup, { key: string; label: string }> = {
+  location: { key: `coalesce(nullif(btrim(location), ''), '(sem loja)')`, label: `NULL` },
+  rep:      { key: `coalesce(nullif(btrim(sales_rep), ''), '(sem vendedor)')`, label: `NULL` },
+  material: { key: `coalesce(nullif(btrim(item), ''), '(sem item)')`,
+              label: `mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '')` },
+};
+
+function salesRowsSql(groupBy: SalesGroup): string {
+  const g = SALES_GROUP_EXPR[groupBy];
+  return `
+SELECT ${g.key} AS key, ${g.label} AS label,
+       coalesce(sum(sale_total), 0) AS total, coalesce(sum(slabs), 0) AS slabs,
+       count(DISTINCT invoice) AS orders, coalesce(sum(margin), 0) AS margin
+FROM erp.sales_lines
+WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date AND sale_date BETWEEN $1 AND $2
+GROUP BY 1
+ORDER BY total DESC, key
+LIMIT 50`;
+}
+
+export async function getErpSales(period: SalesPeriod, groupBy: SalesGroup): Promise<ErpSales> {
+  const [win] = await erpQuery(SALES_WINDOW_SQL, [period]);
+  const asOf = dayOf(win?.snapshot) ?? '';
+  const empty: ErpSales = {
+    asOf, stale: false, period, groupBy,
+    total: 0, prevTotal: null, deltaPct: null, slabs: 0, orders: 0,
+    avgTicket: 0, avgTicketPrev: null, avgTicketDeltaPct: null, marginPct: 0, rows: [],
+  };
+  if (!win?.day) return empty; // sem nenhum dia com vendas
+
+  const range = [dayOf(win.cur_from), dayOf(win.cur_to), dayOf(win.prev_from), dayOf(win.prev_to)];
+  const [totals, rows, labels] = await Promise.all([
+    erpQuery(SALES_TOTALS_SQL, range),
+    erpQuery(salesRowsSql(groupBy), range.slice(0, 2)),
+    groupBy === 'location' ? locationLabels() : Promise.resolve(new Map<string, string>()),
+  ]);
+  const t = totals[0] ?? {};
+  const total = usd(t.total);
+  const orders = int(t.orders);
+  const hasPrev = num(t.prev_rows) > 0;
+  const prevTotal = hasPrev ? usd(t.prev_total) : null;
+  const prevOrders = int(t.prev_orders);
+  const avgTicket = orders > 0 ? usd(total / orders) : 0;
+  const avgTicketPrev = hasPrev && prevOrders > 0 ? usd(num(t.prev_total) / prevOrders) : null;
+  const marginPct = (m: unknown, tot: number) => (tot > 0 ? Number(((num(m) / tot) * 100).toFixed(1)) : 0);
+
+  return {
+    ...empty,
+    total, prevTotal, deltaPct: deltaPct(total, prevTotal),
+    slabs: int(t.slabs), orders,
+    avgTicket, avgTicketPrev, avgTicketDeltaPct: deltaPct(avgTicket, avgTicketPrev),
+    marginPct: marginPct(t.margin, num(t.total)),
+    rows: rows.map(r => {
+      const key = String(r.key);
+      const rowTotal = usd(r.total);
+      return {
+        key,
+        label: groupBy === 'location' ? labelOf(labels, key) : groupBy === 'material' ? String(r.label ?? '') : key,
+        total: rowTotal, slabs: int(r.slabs), orders: int(r.orders),
+        marginPct: marginPct(r.margin, num(r.total)),
+        sharePct: total > 0 ? Number(((rowTotal / total) * 100).toFixed(1)) : 0,
+      };
+    }),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* /erp/purchasing                                                     */
+/* ------------------------------------------------------------------ */
+
+export interface ErpPurchasing {
+  asOf: string; stale: boolean;
+  incoming: {
+    po: string; supplier: string | null; container: string | null;
+    destination: string | null; destinationLabel: string | null;
+    eta: string | null; daysLate: number; status: string | null;
+    slabs: number; cost: number; items: number;
+  }[];
+  received30d: { slabs: number; cost: number; pos: number };
+  pipeline: { slabsOnHold: number; openSalesOrders: number; posNotReceived: number; inTransitSlabs: number; inTransitContainers: number };
+}
+
+/** POs em trânsito (status é texto livre e hoje vem vazio no ERP), por ETA asc. */
+const INCOMING_SQL = `
+SELECT max(snapshot_date) OVER () AS snapshot, po,
+       mode() WITHIN GROUP (ORDER BY supplier)    FILTER (WHERE coalesce(btrim(supplier), '') <> '')    AS supplier,
+       string_agg(DISTINCT nullif(btrim(container), ''), ', ')                                         AS container,
+       mode() WITHIN GROUP (ORDER BY destination) FILTER (WHERE coalesce(btrim(destination), '') <> '') AS destination,
+       min(eta) AS eta,
+       greatest(current_date - min(eta), 0)::int AS days_late,
+       mode() WITHIN GROUP (ORDER BY status)      FILTER (WHERE coalesce(btrim(status), '') <> '')      AS status,
+       coalesce(sum(slabs), 0) AS slabs, coalesce(sum(total_cost), 0) AS cost, count(*) AS items
+FROM erp.in_transit
+WHERE ${NOT_RECEIVED} AND coalesce(btrim(po), '') <> ''
+GROUP BY po
+ORDER BY min(eta) ASC NULLS LAST, po
+LIMIT 50`;
+
+const RECEIVED_30D_SQL = `
+SELECT coalesce(sum(slabs), 0) AS slabs,
+       coalesce(sum(coalesce(landed_total_cost, fob_total_cost)), 0) AS cost,
+       count(DISTINCT po) AS pos
+FROM erp.received
+WHERE received_date IS NOT NULL AND received_date > snapshot_date - 30 AND received_date <= snapshot_date`;
+
+const PIPELINE_SQL = `
+SELECT
+  (SELECT coalesce(sum(slabs), 0) FROM erp.on_hold)                                    AS slabs_on_hold,
+  (SELECT count(DISTINCT so) FROM erp.on_so)                                           AS open_so,
+  (SELECT count(DISTINCT po) FROM erp.in_transit WHERE ${NOT_RECEIVED})                AS pos_not_received,
+  (SELECT coalesce(sum(slabs), 0) FROM erp.in_transit WHERE ${NOT_RECEIVED})           AS transit_slabs,
+  (SELECT count(DISTINCT container) FROM erp.in_transit
+     WHERE ${NOT_RECEIVED} AND coalesce(btrim(container), '') <> '')                    AS transit_containers,
+  (SELECT max(snapshot_date) FROM erp.in_transit)                                      AS snapshot`;
+
+export async function getErpPurchasing(): Promise<ErpPurchasing> {
+  const [incoming, received, pipeline, labels] = await Promise.all([
+    erpQuery(INCOMING_SQL), erpQuery(RECEIVED_30D_SQL), erpQuery(PIPELINE_SQL), locationLabels(),
+  ]);
+  const p = pipeline[0] ?? {};
+  const r = received[0] ?? {};
+  return {
+    asOf: dayOf(p.snapshot) ?? '',
+    stale: false,
+    incoming: incoming.map(x => {
+      const destination = (x.destination as string | null) ?? null;
+      return {
+        po: String(x.po).trim(),
+        supplier: (x.supplier as string | null) ?? null,
+        container: (x.container as string | null) ?? null,
+        destination, destinationLabel: destination ? labelOf(labels, destination) : null,
+        eta: dayOf(x.eta), daysLate: int(x.days_late),
+        status: (x.status as string | null) ?? null,
+        slabs: int(x.slabs), cost: usd(x.cost), items: int(x.items),
+      };
+    }),
+    received30d: { slabs: int(r.slabs), cost: usd(r.cost), pos: int(r.pos) },
+    pipeline: {
+      slabsOnHold: int(p.slabs_on_hold), openSalesOrders: int(p.open_so),
+      posNotReceived: int(p.pos_not_received),
+      inTransitSlabs: int(p.transit_slabs), inTransitContainers: int(p.transit_containers),
+    },
+  };
+}
