@@ -91,10 +91,27 @@ cmd_first_time() {
 cmd_update() {
   echo "==> Sincronizando código…"
   cmd_sync
+  echo "==> Completando .env remoto com chaves novas de .env.prod…"
+  cmd_env_append
   echo "==> Rebuild + restart…"
   $SSH "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
   echo "==> Status:"
   $SSH "cd $REMOTE_DIR && docker compose ps"
+}
+
+# Anexa ao .env remoto as chaves de .env.prod que AINDA NÃO existem lá.
+# Só append de chaves ausentes: nunca sobrescreve, nunca imprime valores.
+# (O .env do servidor tem chaves que só existem lá, ex. credenciais AWS; por
+# isso não copiamos o arquivo inteiro fora do first-time.)
+cmd_env_append() {
+  if [ ! -f .env.prod ]; then echo "    (.env.prod ausente; pulando)"; return; fi
+  $SCP -q .env.prod "$SSH_USER@$INSTANCE_IP:/tmp/.env.prod.new"
+  $SSH 'cd '"$REMOTE_DIR"' && touch .env && added=0; while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in \#*|"") continue ;; esac
+      key=${line%%=*}
+      [ -n "$key" ] || continue
+      if ! grep -q "^${key}=" .env; then printf "%s\n" "$line" >> .env; echo "    + $key"; added=$((added+1)); fi
+    done < /tmp/.env.prod.new; rm -f /tmp/.env.prod.new; echo "    chaves adicionadas: $added"'
 }
 
 cmd_sync() {
