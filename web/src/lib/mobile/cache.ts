@@ -119,9 +119,26 @@ export async function respondCachedOr503<T extends object>(
   try {
     return (await respondCached(req, fetcher))!;
   } catch (err) {
+    if (!isSourceDown(err)) throw err; // erro de SQL/código: withToken responde 500 e loga
     console.error('[api/mobile] ERP indisponível sem cache:', req.nextUrl.pathname, err instanceof Error ? err.message : err);
     return NextResponse.json({ error: 'ERP indisponível' }, { status: 503, headers: { 'Retry-After': '60' } });
   }
+}
+
+/**
+ * "Fonte fora" = URL não configurada, rede/DNS/timeout, ou erro do Postgres
+ * das classes 08 (conexão), 53 (recursos), 57 (intervenção, inclui
+ * statement_timeout 57014). Qualquer outra coisa (SQL inválido, coluna/tipo
+ * errado) é bug e deve virar 500 com log, não 503.
+ */
+export function isSourceDown(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'ErpUnavailableError') return true;
+  const e = err as Error & { code?: string };
+  const code = e.code ?? '';
+  if (/^(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|EAI_AGAIN|EPIPE)$/.test(code)) return true;
+  if (/^(08|53|57)/.test(code)) return true;
+  return /timeout|terminated unexpectedly|connection/i.test(err.message);
 }
 
 /** Só para testes/diagnóstico. */

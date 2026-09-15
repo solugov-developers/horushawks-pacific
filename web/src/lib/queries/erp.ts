@@ -43,12 +43,17 @@ const money = (n: number): string => {
 };
 
 /** Sem cache do BFF: as views só mudam 1×/dia; a tabela é minúscula. */
-async function locationLabels(): Promise<Map<string, string>> {
-  const rows = await erpQuery<{ code: string; label: string | null }>('SELECT code, label FROM erp.locations');
-  return new Map(rows.map(r => [r.code, r.label?.trim() || r.code]));
+type LocationInfo = { label: string; region: string | null };
+async function locationLabels(): Promise<Map<string, LocationInfo>> {
+  const rows = await erpQuery<{ code: string; label: string | null; region: string | null }>(
+    'SELECT code, label, region FROM erp.locations',
+  );
+  return new Map(rows.map(r => [r.code, { label: r.label?.trim() || r.code, region: r.region?.trim() || null }]));
 }
-const labelOf = (labels: Map<string, string>, code: string | null | undefined): string =>
-  code ? (labels.get(code) ?? code) : '';
+const labelOf = (labels: Map<string, LocationInfo>, code: string | null | undefined): string =>
+  code ? (labels.get(code)?.label ?? code) : '';
+const regionOf = (labels: Map<string, LocationInfo>, code: string | null | undefined): string | null =>
+  code ? (labels.get(code)?.region ?? null) : null;
 
 /* ------------------------------------------------------------------ */
 /* /status                                                             */
@@ -168,11 +173,11 @@ ORDER BY d90plus DESC, balance DESC
 LIMIT $2`;
 
 const LATE_CONTAINERS_SQL = `
-SELECT po, min(eta) AS eta, (current_date - min(eta))::int AS days_late,
+SELECT po::text AS po, min(eta) AS eta, (current_date - min(eta))::int AS days_late,
        max(destination) AS destination, max(container) AS container, coalesce(sum(slabs), 0) AS slabs
 FROM erp.in_transit
 WHERE eta IS NOT NULL AND eta < current_date AND ${NOT_RECEIVED}
-GROUP BY po
+GROUP BY po::text
 ORDER BY days_late DESC, slabs DESC
 LIMIT $1`;
 
@@ -393,7 +398,7 @@ export const SALES_GROUPS = ['location', 'rep', 'material'] as const;
 export type SalesPeriod = typeof SALES_PERIODS[number];
 export type SalesGroup = typeof SALES_GROUPS[number];
 
-export interface ErpSalesRow { key: string; label: string; total: number; slabs: number; orders: number; marginPct: number; sharePct: number }
+export interface ErpSalesRow { key: string; label: string; sub: string | null; total: number; slabs: number; orders: number; marginPct: number; sharePct: number }
 export interface ErpSales {
   asOf: string; stale: boolean; period: SalesPeriod; groupBy: SalesGroup;
   total: number; prevTotal: number | null; deltaPct: number | null; slabs: number; orders: number;
@@ -405,7 +410,7 @@ export interface ErpSales {
  * Janelas por período, ancoradas em D = último dia completo com vendas (o
  * mesmo `sales.date` do /erp/today):
  *  day   : [D, D]                       vs [D-7, D-7]
- *  month : [início do mês de D, D]      vs mês anterior completo
+ *  month : [início do mês de D, D]      vs [início do mês anterior, D - 1 mês]  (mesmo dia; = mtdLastMonth)
  *  year  : [1/jan do ano de D, D]       vs [1/jan do ano anterior, D - 1 ano]
  * Faturas pós-datadas (sale_date > snapshot_date) ficam fora.
  */
@@ -426,7 +431,7 @@ SELECT snap.snapshot, d.day,
           WHEN 'month' THEN date_trunc('month', d.day - interval '1 month')::date
           ELSE date_trunc('year', d.day - interval '1 year')::date END               AS prev_from,
   CASE $1 WHEN 'day' THEN d.day - 7
-          WHEN 'month' THEN (date_trunc('month', d.day) - interval '1 day')::date
+          WHEN 'month' THEN (d.day - interval '1 month')::date
           ELSE (d.day - interval '1 year')::date END                                 AS prev_to
 FROM snap LEFT JOIN d ON true`;
 
@@ -442,18 +447,23 @@ SELECT
 FROM erp.sales_lines
 WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date`;
 
-/** Expressão de agrupamento por groupBy (whitelist; nunca vem do usuário direto). */
-const SALES_GROUP_EXPR: Record<SalesGroup, { key: string; label: string }> = {
-  location: { key: `coalesce(nullif(btrim(location), ''), '(sem loja)')`, label: `NULL` },
-  rep:      { key: `coalesce(nullif(btrim(sales_rep), ''), '(sem vendedor)')`, label: `NULL` },
+/**
+ * Expressão de agrupamento por groupBy (whitelist; nunca vem do usuário direto).
+ * `sub` = subtítulo: loja → região (erp.locations), vendedor → loja mais
+ * frequente, material → categoria. label de loja é resolvido depois (erp.locations).
+ */
+const SALES_GROUP_EXPR: Record<SalesGroup, { key: string; sub: string }> = {
+  location: { key: `coalesce(nullif(btrim(location), ''), '(sem loja)')`, sub: `NULL` },
+  rep:      { key: `coalesce(nullif(btrim(sales_rep), ''), '(sem vendedor)')`,
+              sub: `mode() WITHIN GROUP (ORDER BY location) FILTER (WHERE coalesce(btrim(location), '') <> '')` },
   material: { key: `coalesce(nullif(btrim(item), ''), '(sem item)')`,
-              label: `mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '')` },
+              sub: `mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '')` },
 };
 
 function salesRowsSql(groupBy: SalesGroup): string {
   const g = SALES_GROUP_EXPR[groupBy];
   return `
-SELECT ${g.key} AS key, ${g.label} AS label,
+SELECT ${g.key} AS key, ${g.sub} AS sub,
        coalesce(sum(sale_total), 0) AS total, coalesce(sum(slabs), 0) AS slabs,
        count(DISTINCT invoice) AS orders, coalesce(sum(margin), 0) AS margin
 FROM erp.sales_lines
@@ -477,7 +487,7 @@ export async function getErpSales(period: SalesPeriod, groupBy: SalesGroup): Pro
   const [totals, rows, labels] = await Promise.all([
     erpQuery(SALES_TOTALS_SQL, range),
     erpQuery(salesRowsSql(groupBy), range.slice(0, 2)),
-    groupBy === 'location' ? locationLabels() : Promise.resolve(new Map<string, string>()),
+    locationLabels(),
   ]);
   const t = totals[0] ?? {};
   const total = usd(t.total);
@@ -498,9 +508,13 @@ export async function getErpSales(period: SalesPeriod, groupBy: SalesGroup): Pro
     rows: rows.map(r => {
       const key = String(r.key);
       const rowTotal = usd(r.total);
+      const sub = (r.sub as string | null) ?? null;
       return {
         key,
-        label: groupBy === 'location' ? labelOf(labels, key) : groupBy === 'material' ? String(r.label ?? '') : key,
+        label: groupBy === 'location' ? labelOf(labels, key) : key,
+        sub: groupBy === 'location' ? regionOf(labels, key)
+           : groupBy === 'rep' ? (sub ? labelOf(labels, sub) : null)
+           : sub,
         total: rowTotal, slabs: int(r.slabs), orders: int(r.orders),
         marginPct: marginPct(r.margin, num(r.total)),
         sharePct: total > 0 ? Number(((rowTotal / total) * 100).toFixed(1)) : 0,
@@ -525,9 +539,13 @@ export interface ErpPurchasing {
   pipeline: { slabsOnHold: number; openSalesOrders: number; posNotReceived: number; inTransitSlabs: number; inTransitContainers: number };
 }
 
-/** POs em trânsito (status é texto livre e hoje vem vazio no ERP), por ETA asc. */
+/**
+ * POs em trânsito (status é texto livre e hoje vem vazio no ERP), por ETA asc.
+ * po::text: o load.py infere o tipo da coluna crua no primeiro dia (pode ser
+ * bigint num banco e text noutro); em texto funciona nos dois.
+ */
 const INCOMING_SQL = `
-SELECT max(snapshot_date) OVER () AS snapshot, po,
+SELECT max(snapshot_date) OVER () AS snapshot, po::text AS po,
        mode() WITHIN GROUP (ORDER BY supplier)    FILTER (WHERE coalesce(btrim(supplier), '') <> '')    AS supplier,
        string_agg(DISTINCT nullif(btrim(container), ''), ', ')                                         AS container,
        mode() WITHIN GROUP (ORDER BY destination) FILTER (WHERE coalesce(btrim(destination), '') <> '') AS destination,
@@ -536,9 +554,9 @@ SELECT max(snapshot_date) OVER () AS snapshot, po,
        mode() WITHIN GROUP (ORDER BY status)      FILTER (WHERE coalesce(btrim(status), '') <> '')      AS status,
        coalesce(sum(slabs), 0) AS slabs, coalesce(sum(total_cost), 0) AS cost, count(*) AS items
 FROM erp.in_transit
-WHERE ${NOT_RECEIVED} AND coalesce(btrim(po), '') <> ''
-GROUP BY po
-ORDER BY min(eta) ASC NULLS LAST, po
+WHERE ${NOT_RECEIVED} AND coalesce(btrim(po::text), '') <> ''
+GROUP BY po::text
+ORDER BY min(eta) ASC NULLS LAST, po::text
 LIMIT 50`;
 
 const RECEIVED_30D_SQL = `
