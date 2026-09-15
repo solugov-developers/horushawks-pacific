@@ -545,7 +545,7 @@ export interface ErpPurchasing {
  * bigint num banco e text noutro); em texto funciona nos dois.
  */
 const INCOMING_SQL = `
-SELECT max(snapshot_date) OVER () AS snapshot, po::text AS po,
+SELECT po::text AS po,
        mode() WITHIN GROUP (ORDER BY supplier)    FILTER (WHERE coalesce(btrim(supplier), '') <> '')    AS supplier,
        string_agg(DISTINCT nullif(btrim(container), ''), ', ')                                         AS container,
        mode() WITHIN GROUP (ORDER BY destination) FILTER (WHERE coalesce(btrim(destination), '') <> '') AS destination,
