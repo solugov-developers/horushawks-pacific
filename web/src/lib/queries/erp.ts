@@ -86,7 +86,7 @@ export interface ErpToday {
   };
   kpis: {
     openSalesOrders: number; openSalesOrdersValue: number;
-    receivableOverdue: number; receivableTotal: number;
+    receivableOverdue: number; receivableTotal: number; customerCredits: number;
     inventoryValue: number; inventorySlabs: number;
     inTransitSlabs: number; inTransitContainers: number;
   };
@@ -149,7 +149,8 @@ SELECT
   (SELECT coalesce(sum(d31_60) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging)  AS ar_d31_60,
   (SELECT coalesce(sum(d61_90) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging)  AS ar_d61_90,
   (SELECT coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_d90plus,
-  (SELECT coalesce(sum(balance_due), 0) FROM erp.ar_aging)                             AS ar_total,
+  (SELECT coalesce(sum("current") FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_current,
+  (SELECT coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) FROM erp.ar_aging) AS ar_credits,
   (SELECT coalesce(sum(asset_value), 0) FROM erp.stock)                                AS inv_value,
   (SELECT coalesce(sum(available_slabs), 0) FROM erp.stock WHERE ${SLAB_ITEMS})       AS inv_slabs,
   (SELECT coalesce(sum(slabs), 0) FROM erp.in_transit WHERE ${NOT_RECEIVED})           AS transit_slabs,
@@ -222,9 +223,11 @@ export async function getErpToday(): Promise<ErpToday> {
     },
     kpis: {
       openSalesOrders: int(k.open_so), openSalesOrdersValue: usd(k.open_so_value),
-      // mesma conta do /erp/finance: faixas arredondadas uma a uma e somadas
+      // Regra BRUTA (mesma conta do /erp/finance): só faturas em aberto (saldos
+      // positivos), faixas arredondadas uma a uma e somadas; créditos à parte.
       receivableOverdue: usd(k.ar_d1_30) + usd(k.ar_d31_60) + usd(k.ar_d61_90) + usd(k.ar_d90plus),
-      receivableTotal: usd(k.ar_total),
+      receivableTotal: usd(k.ar_current) + usd(k.ar_d1_30) + usd(k.ar_d31_60) + usd(k.ar_d61_90) + usd(k.ar_d90plus),
+      customerCredits: usd(k.ar_credits),
       inventoryValue: usd(k.inv_value), inventorySlabs: int(k.inv_slabs),
       inTransitSlabs: int(k.transit_slabs), inTransitContainers: int(k.transit_containers),
     },
@@ -244,32 +247,32 @@ export interface ErpFinance {
   asOf: string; stale: boolean;
   receivable: {
     total: number; current: number; d1_30: number; d31_60: number; d61_90: number; d90plus: number;
-    overdue: number; credits: number; customers: number;
+    overdue: number; credits: number; net: number; customers: number;
   };
   topOverdue: { customer: string; code: string | null; balance: number; d90plus: number; location: string | null; salesRep: string | null }[];
   /** null enquanto não existir a view erp.receipts (eod_receipts_deposits). */
   received: { date: string | null; total: number; count: number; mtd: number } | null;
-  byLocation: { code: string; label: string; receivable: number; overdue: number }[];
+  byLocation: { code: string; label: string; receivable: number; overdue: number; credits: number }[];
   bankTransfers7d: { date: string | null; from: string | null; to: string | null; amount: number }[];
 }
 
 /**
- * Faixas de aging só com saldos positivos (balance_due > 0). Linhas negativas
- * (Deposit, Receipt, Return Order, Credit Memo, Journal…) viram `credits`, de
- * modo que current + d1_30 + d31_60 + d61_90 + d90plus + credits = total.
- * Verificado no snapshot 2026-09-14: nenhuma linha mista (saldo positivo com
- * faixa negativa).
+ * A RECEBER É BRUTO (decisão do usuário, 2026-09-14): total = só faturas em
+ * aberto (balance_due > 0) = current + d1_30 + d31_60 + d61_90 + d90plus.
+ * Linhas negativas (Deposit, Receipt, Return Order, Credit Memo, Journal…) são
+ * dinheiro já recebido e não casado com fatura: ficam fora do total e vão em
+ * `credits`, expresso POSITIVO. net = total - credits. Verificado no snapshot
+ * 2026-09-14: nenhuma linha mista (saldo positivo com faixa negativa).
  */
 const AR_TOTALS_SQL = `
 SELECT max(snapshot_date) AS snapshot,
-       coalesce(sum(balance_due), 0)                                 AS total,
        coalesce(sum("current") FILTER (WHERE balance_due > 0), 0)    AS current,
        coalesce(sum(d1_30)     FILTER (WHERE balance_due > 0), 0)    AS d1_30,
        coalesce(sum(d31_60)    FILTER (WHERE balance_due > 0), 0)    AS d31_60,
        coalesce(sum(d61_90)    FILTER (WHERE balance_due > 0), 0)    AS d61_90,
        coalesce(sum(d90plus)   FILTER (WHERE balance_due > 0), 0)    AS d90plus,
-       coalesce(sum(balance_due) FILTER (WHERE balance_due <= 0), 0) AS credits,
-       count(DISTINCT customer)                                      AS customers
+       coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) AS credits,
+       count(DISTINCT customer) FILTER (WHERE balance_due > 0)       AS customers
 FROM erp.ar_aging`;
 
 /** Por cliente: saldo líquido (inclui créditos), 90+ só das linhas positivas; code = customer_code do ERP (vazio em parte das linhas, por isso max por cliente). */
@@ -316,9 +319,11 @@ async function receivedFromView(): Promise<ErpFinance['received']> {
   return { date: dayOf(r.day), total: usd(r.total), count: int(r.n), mtd: usd(r.mtd) };
 }
 
+/** Por loja, mesma regra bruta: receivable e overdue só de saldos positivos; credits (positivo) à parte. */
 const AR_BY_LOCATION_SQL = `
 SELECT coalesce(nullif(btrim(location), ''), '(sem loja)') AS code,
-       coalesce(sum(balance_due), 0) AS receivable,
+       coalesce(sum(balance_due) FILTER (WHERE balance_due > 0), 0) AS receivable,
+       coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) AS credits,
        coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0))
                 FILTER (WHERE balance_due > 0), 0) AS overdue
 FROM erp.ar_aging
@@ -343,10 +348,9 @@ export async function getErpFinance(): Promise<ErpFinance> {
   ]);
   const t = totals[0] ?? {};
   const d1 = usd(t.d1_30), d2 = usd(t.d31_60), d3 = usd(t.d61_90), d4 = usd(t.d90plus);
-  const total = usd(t.total), current = usd(t.current);
-  // credits derivado dos valores já arredondados: garante a identidade
-  // current + faixas + credits = total mesmo com arredondamento por campo.
-  const credits = total - (current + d1 + d2 + d3 + d4);
+  const current = usd(t.current);
+  const total = current + d1 + d2 + d3 + d4;   // bruto: só faturas em aberto
+  const credits = usd(t.credits);              // positivo
 
   return {
     asOf: dayOf(t.snapshot) ?? '',
@@ -356,6 +360,7 @@ export async function getErpFinance(): Promise<ErpFinance> {
       d1_30: d1, d31_60: d2, d61_90: d3, d90plus: d4,
       overdue: d1 + d2 + d3 + d4,
       credits,
+      net: total - credits,
       customers: int(t.customers),
     },
     topOverdue: top.map(x => ({
@@ -368,7 +373,7 @@ export async function getErpFinance(): Promise<ErpFinance> {
     received,
     byLocation: byLoc.map(x => ({
       code: String(x.code), label: labelOf(labels, String(x.code)),
-      receivable: usd(x.receivable), overdue: usd(x.overdue),
+      receivable: usd(x.receivable), overdue: usd(x.overdue), credits: usd(x.credits),
     })),
     bankTransfers7d: transfers.map(x => ({
       date: dayOf(x.transfer_date),
