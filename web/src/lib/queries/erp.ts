@@ -88,6 +88,8 @@ export interface ErpToday {
   sales: {
     date: string | null; total: number; slabs: number; orders: number;
     sameWeekdayLastWeek: number; deltaPct: number | null; mtd: number; mtdLastMonth: number;
+    /** Vendas PARCIAIS do dia do snapshot (sale_date = snapshot_date), até o último pulso (asOf = loaded_at); null sem venda. */
+    today: { date: string; total: number; slabs: number; orders: number; asOf: string | null } | null;
   };
   kpis: {
     openSalesOrders: number; openSalesOrdersValue: number;
@@ -108,6 +110,12 @@ const OVERDUE_90_MIN = 50_000;
  * fora. available_slabs já é NULL para on_hold/on_so.
  */
 const SLAB_ITEMS = `coalesce(kind, '') !~* 'non stock' AND coalesce(type, '') ~* '^(slab|quartz)$'`;
+/**
+ * REGRA ÚNICA de "chapas em estoque" (kpis.inventorySlabs do /erp/today e
+ * totalSlabs do /erp/inventory): soma de available_slabs dos itens de chapa.
+ * available_slabs já vem NULL para on_hold/on_so, então conta só o disponível.
+ */
+const INVENTORY_SLABS_EXPR = `coalesce(sum(available_slabs) FILTER (WHERE ${SLAB_ITEMS}), 0)`;
 
 /** Filtro de "ainda não recebido" para in_transit (status é texto livre do ERP). */
 const NOT_RECEIVED = `coalesce(status, '') !~* 'receiv|closed|cancel'`;
@@ -146,6 +154,13 @@ agg AS (
 )
 SELECT (SELECT max(snapshot_date) FROM erp.sales_lines) AS snapshot, agg.* FROM agg`;
 
+/** Vendas parciais do próprio dia do snapshot (o pulso intradiário recarrega sales_lines). */
+const SALES_TODAY_SQL = `
+SELECT max(snapshot_date) AS day, max(loaded_at) AS loaded_at,
+       coalesce(sum(sale_total), 0) AS total, coalesce(sum(slabs), 0) AS slabs, count(DISTINCT invoice) AS orders
+FROM erp.sales_lines WHERE sale_date = snapshot_date
+HAVING count(*) > 0`;
+
 const KPI_SQL = `
 SELECT
   (SELECT count(DISTINCT so) FROM erp.on_so)                                           AS open_so,
@@ -157,7 +172,7 @@ SELECT
   (SELECT coalesce(sum("current") FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_current,
   (SELECT coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) FROM erp.ar_aging) AS ar_credits,
   (SELECT coalesce(sum(asset_value), 0) FROM erp.stock)                                AS inv_value,
-  (SELECT coalesce(sum(available_slabs), 0) FROM erp.stock WHERE ${SLAB_ITEMS})       AS inv_slabs,
+  (SELECT ${INVENTORY_SLABS_EXPR} FROM erp.stock)                                        AS inv_slabs,
   (SELECT coalesce(sum(slabs), 0) FROM erp.in_transit WHERE ${NOT_RECEIVED})           AS transit_slabs,
   (SELECT count(DISTINCT container) FROM erp.in_transit
      WHERE ${NOT_RECEIVED} AND coalesce(btrim(container), '') <> '')                    AS transit_containers`;
@@ -182,8 +197,9 @@ ORDER BY days_late DESC, slabs DESC
 LIMIT $1`;
 
 export async function getErpToday(): Promise<ErpToday> {
-  const [sales, kpis, overdue, late, labels, market] = await Promise.all([
+  const [sales, today, kpis, overdue, late, labels, market] = await Promise.all([
     erpQuery(SALES_SQL),
+    erpQuery(SALES_TODAY_SQL),
     erpQuery(KPI_SQL),
     erpQuery(OVERDUE_CUSTOMERS_SQL, [OVERDUE_90_MIN, ATTENTION_MAX]),
     erpQuery(LATE_CONTAINERS_SQL, [ATTENTION_MAX]),
@@ -225,6 +241,9 @@ export async function getErpToday(): Promise<ErpToday> {
       sameWeekdayLastWeek: sameWeekday,
       deltaPct: deltaPct(total, sameWeekday),
       mtd: usd(s.mtd), mtdLastMonth: usd(s.mtd_last_month),
+      today: today[0] && dayOf(today[0].day)
+        ? { date: dayOf(today[0].day)!, total: usd(today[0].total), slabs: int(today[0].slabs), orders: int(today[0].orders), asOf: isoOf(today[0].loaded_at) }
+        : null,
     },
     kpis: {
       openSalesOrders: int(k.open_so), openSalesOrdersValue: usd(k.open_so_value),
@@ -634,8 +653,11 @@ export interface ErpInventory {
 
 /**
  * Estoque em mãos por produto: uma linha de erp.stock = uma chapa (serial).
- * Só itens de chapa (SLAB_ITEMS), como inventorySlabs do /erp/today.
- * status: in_stock (livre) | on_hold | on_so | in_transit (transferência entre lojas).
+ * Só itens de chapa (SLAB_ITEMS). slabs/available/onHold/onSo contam chapas
+ * físicas por status; inTransit = chapas em POs não recebidos (erp.in_transit),
+ * a MESMA medida do detalhe /erp/materials. Transferências entre lojas
+ * (status in_transit do stock) ficam só em lots[].status.
+ * totalSlabs = INVENTORY_SLABS_EXPR (igual a kpis.inventorySlabs).
  */
 const INVENTORY_SQL = `
 WITH base AS (
@@ -644,31 +666,40 @@ WITH base AS (
     AND ($1::text IS NULL OR coalesce(btrim(location), '') = $1)
     AND ($2::text IS NULL OR product ILIKE $2 OR coalesce(category, '') ILIKE $2 OR coalesce(type, '') ILIKE $2)
 ),
+po AS (
+  SELECT product, coalesce(sum(slabs), 0) AS in_transit FROM erp.in_transit
+  WHERE ${NOT_RECEIVED} GROUP BY product
+),
 g AS (
-  SELECT product,
+  SELECT b.product,
          mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
          mode() WITHIN GROUP (ORDER BY type)     FILTER (WHERE coalesce(btrim(type), '') <> '')     AS type,
          count(*)                                        AS slabs,
          count(*) FILTER (WHERE status = 'in_stock')     AS available,
          count(*) FILTER (WHERE status = 'on_hold')      AS on_hold,
          count(*) FILTER (WHERE status = 'on_so')        AS on_so,
-         count(*) FILTER (WHERE status = 'in_transit')   AS in_transit,
+         coalesce(max(po.in_transit), 0)                 AS in_transit,
          coalesce(sum(asset_value), 0)                   AS asset_value,
+         ${INVENTORY_SLABS_EXPR}                         AS inv_slabs,
          round(avg(length_in))                           AS avg_len,
          round(avg(width_in))                            AS avg_wid,
          array_remove(array_agg(DISTINCT nullif(btrim(location), '') ORDER BY nullif(btrim(location), '')), NULL) AS locations
-  FROM base WHERE coalesce(btrim(product), '') <> ''
-  GROUP BY product
+  FROM base b LEFT JOIN po ON po.product = b.product
+  WHERE coalesce(btrim(b.product), '') <> ''
+  GROUP BY b.product
 )
-SELECT g.*, count(*) OVER () AS total_materials, sum(slabs) OVER () AS total_slabs, sum(asset_value) OVER () AS total_value,
+SELECT g.*, count(*) OVER () AS total_materials, sum(inv_slabs) OVER () AS total_slabs, sum(asset_value) OVER () AS total_value,
        (SELECT max(snapshot_date) FROM erp.stock) AS snapshot
 FROM g
 ORDER BY slabs DESC, product
 LIMIT $3 OFFSET $4`;
 
+/** Só LOJAS (códigos com region em erp.locations); depósitos e terceiros entram nas contagens, não no filtro. */
 const STOCK_LOCATIONS_SQL = `
-SELECT DISTINCT btrim(location) AS code FROM erp.stock
-WHERE coalesce(btrim(location), '') <> '' AND ${SLAB_ITEMS} ORDER BY 1`;
+SELECT l.code FROM erp.locations l
+WHERE l.region IS NOT NULL
+  AND EXISTS (SELECT 1 FROM erp.stock s WHERE btrim(s.location) = l.code AND ${SLAB_ITEMS})
+ORDER BY l.code`;
 
 export async function getErpInventory(opts: { q?: string | null; location?: string | null; page: number; pageSize: number }): Promise<ErpInventory> {
   const { page, pageSize } = opts;
@@ -779,6 +810,21 @@ SELECT coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 30), 0)    
        sum(qty)        FILTER (WHERE sale_date > snapshot_date - 90 AND coalesce(uom, '') ~* '^sf$' AND qty > 0) AS sf_qty
 FROM erp.sales_lines WHERE item = $1 AND sale_date IS NOT NULL AND sale_date <= snapshot_date`;
 
+async function competitorSummary(name: string): Promise<ErpMaterial['competitors']> {
+  if (!name) return null;
+  try {
+    const out = await cached<{ v: ErpMaterial['competitors'] }>(`competitors:${nameKey(name)}`, async () => {
+      const canonical = await findCompetitorItemName(name);
+      const m = canonical ? await getMobileMaterial(canonical) : null;
+      return { v: m ? { itemName: m.itemName, slabs: m.slabs, sources: m.sources.length, removed30d: m.removed30d } : null };
+    });
+    return out.body?.v ?? null;
+  } catch (err) {
+    console.error('[erp/materials] concorrentes indisponíveis:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 const sizeOf = (l: unknown, w: unknown): [number, number] | null =>
   l != null && w != null && num(l) > 0 && num(w) > 0 ? [int(l), int(w)] : null;
 
@@ -800,16 +846,8 @@ export async function getErpMaterial(productInput: string): Promise<ErpMaterial 
   const v = sales[0] ?? {};
 
   // Concorrentes: mesmo material pelo nome "de mercado" (sem espessura/acabamento/Premium).
-  let competitors: ErpMaterial['competitors'] = null;
-  try {
-    const name = await findCompetitorItemName(marketName(product));
-    if (name) {
-      const m = await getMobileMaterial(name);
-      if (m) competitors = { itemName: m.itemName, slabs: m.slabs, sources: m.sources.length, removed30d: m.removed30d };
-    }
-  } catch (err) {
-    console.error('[erp/materials] concorrentes indisponíveis:', err instanceof Error ? err.message : err);
-  }
+  // Cacheado por nome (5 min): o resumo custa ~5 consultas ao Postgres dos scrapers.
+  const competitors = await competitorSummary(marketName(product));
 
   const inTransit = incoming.reduce((a, r) => a + int(r.slabs), 0);
   return {
