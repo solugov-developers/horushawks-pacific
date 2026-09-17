@@ -99,6 +99,7 @@ services:
 
   # Pipeline de imagens (job pontual, NÃO sobe no `up` — profile "pipeline").
   # Rodar detached:  docker compose --profile pipeline run -d --rm imgpipe
+  # Só uma fonte, sem backfill: ... run -d --rm -e SCRAPER=pacshore -e ONLY_NEW=1 -e SLEEP=0.5 imgpipe
   imgpipe:
     build:
       context: ./pipeline

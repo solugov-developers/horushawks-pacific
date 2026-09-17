@@ -25,6 +25,8 @@ THUMB_W  = int(os.environ.get("THUMB_W", "400"))
 ORIG_MAX = int(os.environ.get("ORIG_MAX", "2000"))  # lado maior do original recortado
 ORIG_Q   = int(os.environ.get("ORIG_Q", "90"))
 SLEEP    = float(os.environ.get("SLEEP", "0.2"))   # gentil com a prod
+SCRAPER  = os.environ.get("SCRAPER", "").strip()    # só URLs de uma fonte (ex.: pacshore); vazio = todas
+ONLY_NEW = os.environ.get("ONLY_NEW", "") == "1"    # 1 = ignora linhas 'done' sem original (sem backfill)
 UA       = "Mozilla/5.0 (compatible; HorusHawksImagePipeline/1.0)"
 
 s3 = boto3.client("s3", region_name=REGION)
@@ -46,15 +48,21 @@ def ensure_table():
 
 
 def worklist():
+    """URLs a processar. SCRAPER restringe a uma fonte; ONLY_NEW=1 deixa de fora
+    as linhas já 'done' (só thumb) — útil para rodar uma fonte nova sem puxar
+    o backfill dos originais de todo o histórico."""
+    scraper_join = "JOIN scrapers s ON s.id = h.scraper_id AND s.name = %s" if SCRAPER else ""
+    done_cond = ("a.status = 'done'" if ONLY_NEW
+                 else "a.status = 'done' AND a.original_key IS NOT NULL")
+    params = (SCRAPER,) if SCRAPER else ()
     with db.cursor() as c:
-        c.execute("""
-          SELECT DISTINCT h.image_url FROM slabs_history h
+        c.execute(f"""
+          SELECT DISTINCT h.image_url FROM slabs_history h {scraper_join}
           WHERE h.image_url IS NOT NULL AND h.image_url !~ 'sps-files/$'
             AND NOT EXISTS (SELECT 1 FROM image_assets a
-                            WHERE a.source_url = h.image_url AND a.status = 'done'
-                              AND a.original_key IS NOT NULL)
+                            WHERE a.source_url = h.image_url AND {done_cond})
           ORDER BY (SELECT a.status FROM image_assets a WHERE a.source_url = h.image_url) IS NULL DESC,
-                   h.image_url""")   # nunca vistas primeiro; depois done-sem-original e failed
+                   h.image_url""", params)   # nunca vistas primeiro; depois done-sem-original e failed
         return [r[0] for r in c.fetchall()]
 
 
@@ -144,7 +152,7 @@ def main():
     ensure_table()
     urls = worklist()
     total = len(urls)
-    print(f"[imgpipe] a processar: {total}", flush=True)
+    print(f"[imgpipe] a processar: {total} (scraper={SCRAPER or 'todas'}, only_new={ONLY_NEW})", flush=True)
     ok = fail = 0
     for i, url in enumerate(urls, 1):
         try:
