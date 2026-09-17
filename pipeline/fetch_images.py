@@ -57,10 +57,11 @@ def worklist():
     params = (SCRAPER,) if SCRAPER else ()
     with db.cursor() as c:
         c.execute(f"""
-          SELECT DISTINCT h.image_url FROM slabs_history h {scraper_join}
+          SELECT h.image_url FROM slabs_history h {scraper_join}
           WHERE h.image_url IS NOT NULL AND h.image_url !~ 'sps-files/$'
             AND NOT EXISTS (SELECT 1 FROM image_assets a
                             WHERE a.source_url = h.image_url AND {done_cond})
+          GROUP BY h.image_url
           ORDER BY (SELECT a.status FROM image_assets a WHERE a.source_url = h.image_url) IS NULL DESC,
                    h.image_url""", params)   # nunca vistas primeiro; depois done-sem-original e failed
         return [r[0] for r in c.fetchall()]
