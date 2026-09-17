@@ -229,17 +229,46 @@ export interface InventoryOpts {
 }
 
 /**
- * Espessura dos concorrentes normalizada: o campo cru varia ("3", "2cm",
- * "12mm", "1.8", "2 3/4"). Regra: primeiro número (vírgula = ponto) + unidade
- * explícita; sem unidade, >= 6 é mm (12, 18) e < 6 é cm -> "3 cm", "1.8 cm",
- * "12 mm". Frações e textos sem número inicial ficam de fora (NULL).
+ * Espessura dos concorrentes normalizada em TS (o campo cru varia: "3", "2cm",
+ * "3CM", "30mm", "12mm", "1.8", "3/4\"", "1 1/4 in"). Regra:
+ *   - unidade explícita cm | mm | in/inch/"/″: mm ÷ 10, polegadas × 2.54;
+ *   - sem unidade: fração = polegadas; número >= 6 = mm; senão cm;
+ *   - resultado arredondado a 0,1 e formatado "N cm" ("2 cm", "1.2 cm", "1.9 cm").
+ * Texto sem número no início -> null (fora do facet e do filtro).
+ * O parâmetro `thickness` passa pela mesma função, então "3cm", "3 CM" e
+ * "30mm" selecionam "3 cm".
  */
-const THICKNESS_NORM = sql`
-  (SELECT CASE WHEN n IS NULL THEN NULL
-               WHEN coalesce(u, CASE WHEN n >= 6 THEN 'mm' ELSE 'cm' END) = 'mm' THEN rtrim(rtrim(n::text, '0'), '.') || ' mm'
-               ELSE rtrim(rtrim(n::text, '0'), '.') || ' cm' END
-   FROM (SELECT replace((regexp_match(sh.thickness, '^\s*(\d+(?:[.,]\d+)?)'))[1], ',', '.')::numeric AS n,
-                lower((regexp_match(sh.thickness, '(cm|mm)', 'i'))[1]) AS u) t)`;
+export function normalizeThickness(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase().replace(/,/g, '.').replace(/[″”]/g, '"').replace(/\s+/g, ' ');
+  const m = /^(?:(\d+)\s+)?(\d+)\s*\/\s*(\d+)|^(\d+(?:\.\d+)?)/.exec(s);
+  if (!m) return null;
+  let value: number;
+  let isFraction = false;
+  if (m[2] && m[3]) { value = (m[1] ? Number(m[1]) : 0) + Number(m[2]) / Number(m[3]); isFraction = true; }
+  else value = Number(m[4]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const unit = /(cm|mm|in(?:ch(?:es)?)?|")/.exec(s.slice(m[0].length))?.[1]
+    ?? (isFraction ? 'in' : value >= 6 ? 'mm' : 'cm');
+  const cm = unit === 'mm' ? value / 10 : unit === 'cm' ? value : value * 2.54;
+  const r = Math.round(cm * 10) / 10;
+  return `${Number.isInteger(r) ? r : r.toFixed(1)} cm`;
+}
+
+/**
+ * Tipos dos concorrentes: alguns scrapers prefixam "Natural"; o facet e o
+ * filtro unem os pares observados (mapa explícito, sem inferência).
+ */
+const TYPE_ALIASES: Record<string, string> = {
+  'natural granite': 'Granite',
+  'natural quartzite': 'Quartzite',
+  'natural marble': 'Marble',
+};
+export function normalizeType(raw: string | null | undefined): string | null {
+  const t = raw?.trim();
+  if (!t) return null;
+  return TYPE_ALIASES[t.toLowerCase()] ?? t;
+}
 
 const FACET_MAX = 12;
 const nkey = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -257,7 +286,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
       grouped AS (
         SELECT coalesce(sh.item_name, '(unnamed)') AS item_name,
                mode() WITHIN GROUP (ORDER BY sh.category_name) FILTER (WHERE sh.category_name <> '') AS category,
-               mode() WITHIN GROUP (ORDER BY tn.t) FILTER (WHERE tn.t IS NOT NULL) AS thickness,
+               array_remove(array_agg(DISTINCT nullif(btrim(sh.thickness), '')), NULL) AS thicknesses,
                count(*)::int AS slabs,
                count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
@@ -265,7 +294,6 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
                (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
-        CROSS JOIN LATERAL (SELECT ${THICKNESS_NORM} AS t) tn
         WHERE 1 = 1${q}${lf}
         GROUP BY sh.item_name
       )
@@ -274,13 +302,13 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
     db.execute(sql`
       WITH latest AS (${latestCte(opts.source)}),
       base AS (
-        SELECT sh.category_name, sh.location, ${THICKNESS_NORM} AS thickness_n
+        SELECT sh.category_name, sh.location, sh.thickness
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         WHERE 1 = 1${q}${lf}
       )
       SELECT axis, key, n FROM (
         SELECT 'types' AS axis, nullif(btrim(category_name), '') AS key, count(*)::int AS n FROM base GROUP BY 2
-        UNION ALL SELECT 'thicknesses', thickness_n, count(*)::int FROM base GROUP BY 2
+        UNION ALL SELECT 'thicknesses', nullif(btrim(thickness), ''), count(*)::int FROM base GROUP BY 2
         UNION ALL SELECT 'locations', nullif(btrim(location), ''), count(*)::int FROM base GROUP BY 2
       ) f WHERE key IS NOT NULL
       ORDER BY axis, n DESC, key
@@ -296,23 +324,36 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
       locations: (r.locations as string[]) ?? [],
       imageUrl: thumbUrl(r.thumb_key),
     } satisfies InventoryRow,
-    thickness: (r.thickness as string | null) ?? null,
+    // espessuras normalizadas do material (um material pode ter 2 cm e 3 cm)
+    thicknesses: [...new Set(((r.thicknesses as string[]) ?? []).map(normalizeThickness).filter((t): t is string => !!t))],
+    typeKey: normalizeType(r.category as string | null),
   }));
-  const types = listOrNull(opts.type?.map(nkey));
-  const thick = listOrNull(opts.thickness?.map(nkey));
-  if (types) all = all.filter(x => x.row.category && types.includes(nkey(x.row.category)));
-  if (thick) all = all.filter(x => x.thickness && thick.includes(nkey(x.thickness)));
+  const types = listOrNull(opts.type?.map(t => nkey(normalizeType(t) ?? t)));
+  const thick = listOrNull(opts.thickness?.map(t => normalizeThickness(t) ?? nkey(t)));
+  if (types) all = all.filter(x => x.typeKey && types.includes(nkey(x.typeKey)));
+  if (thick) all = all.filter(x => x.thicknesses.some(t => thick.includes(t)));
   if (opts.status === 'available') all = all.filter(x => x.row.slabs - x.row.onHold > 0);
   if (opts.status === 'hold') all = all.filter(x => x.row.onHold > 0);
   const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' });
   if (opts.sort === 'name') all.sort((a, b) => byName(a.row.itemName, b.row.itemName));
   else all.sort((a, b) => b.row.slabs - a.row.slabs || byName(a.row.itemName, b.row.itemName));
 
-  const facets: Facets = { types: [], thicknesses: [], regions: [], locations: [] };
+  // facets: normaliza a chave (tipo/espessura) e soma os contadores que caem na mesma chave
+  const merged: Record<keyof Facets, Map<string, number>> = { types: new Map(), thicknesses: new Map(), regions: new Map(), locations: new Map() };
   for (const r of facetRows.rows) {
     const axis = String(r.axis) as keyof Facets;
-    if (!(axis in facets) || facets[axis].length >= FACET_MAX) continue;
-    facets[axis].push({ key: String(r.key), label: String(r.key), count: num(r.n) });
+    if (!(axis in merged)) continue;
+    const raw = String(r.key);
+    const key = axis === 'types' ? normalizeType(raw) : axis === 'thicknesses' ? normalizeThickness(raw) : raw;
+    if (!key) continue;
+    merged[axis].set(key, (merged[axis].get(key) ?? 0) + num(r.n));
+  }
+  const facets: Facets = { types: [], thicknesses: [], regions: [], locations: [] };
+  for (const axis of Object.keys(merged) as (keyof Facets)[]) {
+    facets[axis] = [...merged[axis].entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, FACET_MAX)
+      .map(([key, count]) => ({ key, label: key, count }));
   }
 
   return {
