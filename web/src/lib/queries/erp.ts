@@ -605,3 +605,244 @@ export async function getErpPurchasing(): Promise<ErpPurchasing> {
     },
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* /erp/inventory e /erp/materials                                     */
+/* ------------------------------------------------------------------ */
+
+import { pacshoreThumbMap, nameKey, marketName, findCompetitorItemName } from '@/lib/queries/pacshore';
+import { getMobileMaterial } from '@/lib/queries/mobile';
+
+/** "2cm Taj Mahal - Premium" -> "2 cm"; "12mm Neolith" -> "12 mm"; sem espessura -> null. */
+export function thicknessOf(product: string): string | null {
+  const m = /\b(\d+(?:\.\d+)?)\s*(cm|mm)\b/i.exec(product);
+  return m ? `${m[1]} ${m[2].toLowerCase()}` : null;
+}
+
+export interface ErpInventoryRow {
+  product: string; category: string | null; type: string | null; thickness: string | null;
+  slabs: number; available: number; onHold: number; onSo: number; inTransit: number;
+  assetValue: number; avgSizeIn: [number, number] | null; locations: string[]; imageUrl: string | null;
+}
+export interface ErpInventory {
+  asOf: string; stale: boolean;
+  totalSlabs: number; totalValue: number; totalMaterials: number;
+  page: number; pageSize: number;
+  locations: { code: string; label: string }[];
+  rows: ErpInventoryRow[];
+}
+
+/**
+ * Estoque em mãos por produto: uma linha de erp.stock = uma chapa (serial).
+ * Só itens de chapa (SLAB_ITEMS), como inventorySlabs do /erp/today.
+ * status: in_stock (livre) | on_hold | on_so | in_transit (transferência entre lojas).
+ */
+const INVENTORY_SQL = `
+WITH base AS (
+  SELECT * FROM erp.stock
+  WHERE ${SLAB_ITEMS}
+    AND ($1::text IS NULL OR coalesce(btrim(location), '') = $1)
+    AND ($2::text IS NULL OR product ILIKE $2 OR coalesce(category, '') ILIKE $2 OR coalesce(type, '') ILIKE $2)
+),
+g AS (
+  SELECT product,
+         mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
+         mode() WITHIN GROUP (ORDER BY type)     FILTER (WHERE coalesce(btrim(type), '') <> '')     AS type,
+         count(*)                                        AS slabs,
+         count(*) FILTER (WHERE status = 'in_stock')     AS available,
+         count(*) FILTER (WHERE status = 'on_hold')      AS on_hold,
+         count(*) FILTER (WHERE status = 'on_so')        AS on_so,
+         count(*) FILTER (WHERE status = 'in_transit')   AS in_transit,
+         coalesce(sum(asset_value), 0)                   AS asset_value,
+         round(avg(length_in))                           AS avg_len,
+         round(avg(width_in))                            AS avg_wid,
+         array_remove(array_agg(DISTINCT nullif(btrim(location), '') ORDER BY nullif(btrim(location), '')), NULL) AS locations
+  FROM base WHERE coalesce(btrim(product), '') <> ''
+  GROUP BY product
+)
+SELECT g.*, count(*) OVER () AS total_materials, sum(slabs) OVER () AS total_slabs, sum(asset_value) OVER () AS total_value,
+       (SELECT max(snapshot_date) FROM erp.stock) AS snapshot
+FROM g
+ORDER BY slabs DESC, product
+LIMIT $3 OFFSET $4`;
+
+const STOCK_LOCATIONS_SQL = `
+SELECT DISTINCT btrim(location) AS code FROM erp.stock
+WHERE coalesce(btrim(location), '') <> '' AND ${SLAB_ITEMS} ORDER BY 1`;
+
+export async function getErpInventory(opts: { q?: string | null; location?: string | null; page: number; pageSize: number }): Promise<ErpInventory> {
+  const { page, pageSize } = opts;
+  const loc = opts.location && opts.location !== 'all' ? opts.location.trim() : null;
+  const q = opts.q?.trim() ? `%${opts.q.trim()}%` : null;
+  const [rows, locs, labels, thumbs] = await Promise.all([
+    erpQuery(INVENTORY_SQL, [loc, q, pageSize, (page - 1) * pageSize]),
+    erpQuery<{ code: string }>(STOCK_LOCATIONS_SQL),
+    locationLabels(),
+    pacshoreThumbMap(),
+  ]);
+  const first = rows[0];
+  const snapshot = dayOf(first?.snapshot) ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.stock'))[0]?.s;
+  return {
+    asOf: dayOf(snapshot) ?? '',
+    stale: false,
+    totalSlabs: int(first?.total_slabs), totalValue: usd(first?.total_value), totalMaterials: int(first?.total_materials),
+    page, pageSize,
+    locations: locs.map(l => ({ code: l.code, label: labelOf(labels, l.code) })),
+    rows: rows.map(r => {
+      const product = String(r.product);
+      return {
+        product,
+        category: (r.category as string | null) ?? null,
+        type: (r.type as string | null) ?? null,
+        thickness: thicknessOf(product),
+        slabs: int(r.slabs), available: int(r.available), onHold: int(r.on_hold), onSo: int(r.on_so), inTransit: int(r.in_transit),
+        assetValue: usd(r.asset_value),
+        avgSizeIn: r.avg_len != null && r.avg_wid != null ? [int(r.avg_len), int(r.avg_wid)] : null,
+        locations: (r.locations as string[]) ?? [],
+        imageUrl: thumbs[nameKey(product)] ?? null,
+      };
+    }),
+  };
+}
+
+export interface ErpLot {
+  serial: string | null; lot: string | null; bundle: string | null; location: string | null;
+  status: string; sizeIn: [number, number] | null; receivedAt: string | null;
+  supplier: string | null; customer: string | null; holdUntil: string | null;
+}
+export interface ErpMaterial {
+  asOf: string; stale: boolean;
+  product: string; category: string | null; type: string | null; thickness: string | null; imageUrl: string | null;
+  slabs: number; available: number; onHold: number; onSo: number; inTransit: number;
+  assetValue: number; availableSf: number; avgSizeIn: [number, number] | null;
+  avgCostSf: number | null; avgPriceSf: number | null; sold30d: number; sold30dValue: number;
+  byLocation: { code: string; label: string; slabs: number; available: number }[];
+  lots: ErpLot[];
+  incoming: { po: string; supplier: string | null; eta: string | null; slabs: number; status: string | null }[];
+  competitors: { itemName: string; slabs: number; sources: number; removed30d: number } | null;
+}
+
+/** Nome exato; fallback por caixa/espaços (mesma chave do cruzamento de fotos). */
+const MATERIAL_NAME_SQL = `
+SELECT product FROM erp.stock
+WHERE product = $1 OR lower(regexp_replace(btrim(product), '\\s+', ' ', 'g')) = $2
+GROUP BY product ORDER BY (product = $1) DESC, count(*) DESC LIMIT 1`;
+
+const MATERIAL_SUMMARY_SQL = `
+SELECT max(snapshot_date) AS snapshot,
+       mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
+       mode() WITHIN GROUP (ORDER BY type)     FILTER (WHERE coalesce(btrim(type), '') <> '')     AS type,
+       count(*) AS slabs,
+       count(*) FILTER (WHERE status = 'in_stock')   AS available,
+       count(*) FILTER (WHERE status = 'on_hold')    AS on_hold,
+       count(*) FILTER (WHERE status = 'on_so')      AS on_so,
+       count(*) FILTER (WHERE status = 'in_transit') AS transfer,
+       coalesce(sum(asset_value), 0) AS asset_value,
+       coalesce(sum(available_qty) FILTER (WHERE status = 'in_stock' AND coalesce(units, '') ~* '^sf$'), 0) AS available_sf,
+       round(avg(length_in)) AS avg_len, round(avg(width_in)) AS avg_wid,
+       avg(unit_landed_cost) FILTER (WHERE unit_landed_cost > 0) AS avg_cost_sf
+FROM erp.stock WHERE product = $1`;
+
+const MATERIAL_BY_LOCATION_SQL = `
+SELECT btrim(location) AS code, count(*) AS slabs, count(*) FILTER (WHERE status = 'in_stock') AS available
+FROM erp.stock WHERE product = $1 AND coalesce(btrim(location), '') <> ''
+GROUP BY 1 ORDER BY slabs DESC, code`;
+
+/** Lotes (uma linha por serial). customer/holdUntil vêm de on_hold/on_so pelo serial. */
+const MATERIAL_LOTS_SQL = `
+SELECT s.serial, nullif(btrim(s.lot), '') AS lot, nullif(btrim(s.bundle), '') AS bundle,
+       nullif(btrim(s.location), '') AS location, s.status, s.length_in, s.width_in, s.received_date,
+       nullif(btrim(s.supplier), '') AS supplier,
+       coalesce(nullif(btrim(h.customer), ''), nullif(btrim(o.customer), '')) AS customer,
+       h.expiry_date AS hold_until
+FROM erp.stock s
+LEFT JOIN LATERAL (SELECT customer, expiry_date FROM erp.on_hold x WHERE x.serial = s.serial AND x.product = s.product LIMIT 1) h ON s.status = 'on_hold'
+LEFT JOIN LATERAL (SELECT customer FROM erp.on_so y WHERE y.serial = s.serial AND y.product = s.product LIMIT 1) o ON s.status = 'on_so'
+WHERE s.product = $1
+ORDER BY CASE s.status WHEN 'in_stock' THEN 0 WHEN 'on_hold' THEN 1 WHEN 'on_so' THEN 2 ELSE 3 END, s.received_date DESC NULLS LAST, s.serial
+LIMIT 300`;
+
+const MATERIAL_INCOMING_SQL = `
+SELECT po::text AS po,
+       mode() WITHIN GROUP (ORDER BY supplier) FILTER (WHERE coalesce(btrim(supplier), '') <> '') AS supplier,
+       min(eta) AS eta, coalesce(sum(slabs), 0) AS slabs,
+       mode() WITHIN GROUP (ORDER BY status) FILTER (WHERE coalesce(btrim(status), '') <> '') AS status
+FROM erp.in_transit
+WHERE product = $1 AND ${NOT_RECEIVED} AND coalesce(btrim(po::text), '') <> ''
+GROUP BY po::text ORDER BY min(eta) ASC NULLS LAST, po::text LIMIT 20`;
+
+/** Vendas do produto: 30 d para sold30d; 90 d para preço médio por SF (sale_total / qty em SF). */
+const MATERIAL_SALES_SQL = `
+SELECT coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 30), 0)      AS sold30d,
+       coalesce(sum(sale_total) FILTER (WHERE sale_date > snapshot_date - 30), 0) AS sold30d_value,
+       sum(sale_total) FILTER (WHERE sale_date > snapshot_date - 90 AND coalesce(uom, '') ~* '^sf$' AND qty > 0) AS sf_total,
+       sum(qty)        FILTER (WHERE sale_date > snapshot_date - 90 AND coalesce(uom, '') ~* '^sf$' AND qty > 0) AS sf_qty
+FROM erp.sales_lines WHERE item = $1 AND sale_date IS NOT NULL AND sale_date <= snapshot_date`;
+
+const sizeOf = (l: unknown, w: unknown): [number, number] | null =>
+  l != null && w != null && num(l) > 0 && num(w) > 0 ? [int(l), int(w)] : null;
+
+export async function getErpMaterial(productInput: string): Promise<ErpMaterial | null> {
+  const found = await erpQuery<{ product: string }>(MATERIAL_NAME_SQL, [productInput, nameKey(productInput)]);
+  const product = found[0]?.product;
+  if (!product) return null;
+
+  const [summary, byLoc, lots, incoming, sales, labels, thumbs] = await Promise.all([
+    erpQuery(MATERIAL_SUMMARY_SQL, [product]),
+    erpQuery(MATERIAL_BY_LOCATION_SQL, [product]),
+    erpQuery(MATERIAL_LOTS_SQL, [product]),
+    erpQuery(MATERIAL_INCOMING_SQL, [product]),
+    erpQuery(MATERIAL_SALES_SQL, [product]),
+    locationLabels(),
+    pacshoreThumbMap(),
+  ]);
+  const s = summary[0] ?? {};
+  const v = sales[0] ?? {};
+
+  // Concorrentes: mesmo material pelo nome "de mercado" (sem espessura/acabamento/Premium).
+  let competitors: ErpMaterial['competitors'] = null;
+  try {
+    const name = await findCompetitorItemName(marketName(product));
+    if (name) {
+      const m = await getMobileMaterial(name);
+      if (m) competitors = { itemName: m.itemName, slabs: m.slabs, sources: m.sources.length, removed30d: m.removed30d };
+    }
+  } catch (err) {
+    console.error('[erp/materials] concorrentes indisponíveis:', err instanceof Error ? err.message : err);
+  }
+
+  const inTransit = incoming.reduce((a, r) => a + int(r.slabs), 0);
+  return {
+    asOf: dayOf(s.snapshot) ?? '',
+    stale: false,
+    product,
+    category: (s.category as string | null) ?? null,
+    type: (s.type as string | null) ?? null,
+    thickness: thicknessOf(product),
+    imageUrl: thumbs[nameKey(product)] ?? null,
+    slabs: int(s.slabs), available: int(s.available), onHold: int(s.on_hold), onSo: int(s.on_so), inTransit,
+    assetValue: usd(s.asset_value), availableSf: int(s.available_sf),
+    avgSizeIn: sizeOf(s.avg_len, s.avg_wid),
+    avgCostSf: s.avg_cost_sf != null ? Number(num(s.avg_cost_sf).toFixed(1)) : null,
+    avgPriceSf: num(v.sf_qty) > 0 ? Number((num(v.sf_total) / num(v.sf_qty)).toFixed(1)) : null,
+    sold30d: int(v.sold30d), sold30dValue: usd(v.sold30d_value),
+    byLocation: byLoc.map(r => ({ code: String(r.code), label: labelOf(labels, String(r.code)), slabs: int(r.slabs), available: int(r.available) })),
+    lots: lots.map(r => ({
+      serial: (r.serial as string | null) ?? null,
+      lot: (r.lot as string | null) ?? (typeof r.serial === 'string' && r.serial.includes('-') ? r.serial.split('-')[0] : null),
+      bundle: (r.bundle as string | null) ?? null,
+      location: (r.location as string | null) ?? null,
+      status: String(r.status ?? 'other'),
+      sizeIn: sizeOf(r.length_in, r.width_in),
+      receivedAt: dayOf(r.received_date),
+      supplier: (r.supplier as string | null) ?? null,
+      customer: (r.customer as string | null) ?? null,
+      holdUntil: dayOf(r.hold_until),
+    })),
+    incoming: incoming.map(r => ({
+      po: String(r.po).trim(), supplier: (r.supplier as string | null) ?? null,
+      eta: dayOf(r.eta), slabs: int(r.slabs), status: (r.status as string | null) ?? null,
+    })),
+    competitors,
+  };
+}
