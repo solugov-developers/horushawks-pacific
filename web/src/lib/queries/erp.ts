@@ -629,7 +629,7 @@ export async function getErpPurchasing(): Promise<ErpPurchasing> {
 /* /erp/inventory e /erp/materials                                     */
 /* ------------------------------------------------------------------ */
 
-import { pacshoreThumbMap, nameKey, marketName, findCompetitorItemName } from '@/lib/queries/pacshore';
+import { pacshoreThumbMap, thumbFor, nameKey, marketName, findCompetitorItemName } from '@/lib/queries/pacshore';
 import { getMobileMaterial } from '@/lib/queries/mobile';
 
 /** "2cm Taj Mahal - Premium" -> "2 cm"; "12mm Neolith" -> "12 mm"; sem espessura -> null. */
@@ -730,7 +730,7 @@ export async function getErpInventory(opts: { q?: string | null; location?: stri
         assetValue: usd(r.asset_value),
         avgSizeIn: r.avg_len != null && r.avg_wid != null ? [int(r.avg_len), int(r.avg_wid)] : null,
         locations: (r.locations as string[]) ?? [],
-        imageUrl: thumbs[nameKey(product)] ?? null,
+        imageUrl: thumbFor(thumbs, product),
       };
     }),
   };
@@ -857,7 +857,7 @@ export async function getErpMaterial(productInput: string): Promise<ErpMaterial 
     category: (s.category as string | null) ?? null,
     type: (s.type as string | null) ?? null,
     thickness: thicknessOf(product),
-    imageUrl: thumbs[nameKey(product)] ?? null,
+    imageUrl: thumbFor(thumbs, product),
     slabs: int(s.slabs), available: int(s.available), onHold: int(s.on_hold), onSo: int(s.on_so), inTransit,
     assetValue: usd(s.asset_value), availableSf: int(s.available_sf),
     avgSizeIn: sizeOf(s.avg_len, s.avg_wid),

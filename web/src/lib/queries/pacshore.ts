@@ -10,10 +10,17 @@ import { cached } from '@/lib/mobile/cache';
  *
  * Regra de cruzamento (documentada em db/026_pacshore.sql): o ItemName da
  * vitrine é IGUAL ao product do ERP (mesmo tenant; 2.136/2.144 batem
- * exatamente). Chave = nome com trim + caixa baixa + espaços colapsados, que
- * cobre também diferenças de caixa/espaçamento. Sem normalizar espessura ou
- * acabamento: "2cm Taj Mahal - Premium" e "2cm Taj Mahal Leathered - Premium"
- * são produtos (e fotos) diferentes.
+ * exatamente). Três chaves, da mais estrita para a mais frouxa:
+ *   1. nameKey   : trim + caixa baixa + espaços colapsados (nome exato).
+ *   2. looseKey  : sem "- Premium", sem acabamento (Leathered/Honed/Polished/
+ *                  Brushed/Satin/Matte/Riverwashed/Suede), sem "/", "-" e
+ *                  espaços extras, MANTENDO a espessura -> mesma pedra, mesma
+ *                  espessura, outro acabamento ("3cm Fantasy Brown Polished /
+ *                  Leathered - Premium" -> foto de "3cm Fantasy Brown Leathered").
+ *   3. stoneKey  : looseKey sem a espessura -> mesma pedra em outra espessura
+ *                  ("2cm Calacatta Vagli Honed" -> foto de "3cm Calacatta Vagli").
+ * A foto de capa é da pedra, então os fallbacks 2 e 3 são aceitáveis; a
+ * chave exata sempre vence quando existe.
  */
 
 const IMG_BASE = process.env.APP_PUBLIC_URL ?? 'https://app.horushawks.com';
@@ -21,13 +28,36 @@ const IMG_BASE = process.env.APP_PUBLIC_URL ?? 'https://app.horushawks.com';
 export const nameKey = (s: string | null | undefined): string =>
   (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+const FINISHES = /\b(leathered|honed|polished|brushed|satin|matte|riverwashed|suede|bookmatch(?:ed)?)\b/gi;
+const THICKNESS = /\b\d+(?:\.\d+)?\s*(?:cm|mm)\b/gi;
+
+/** Mesma pedra e espessura, ignorando acabamento, "- Premium", "/" e "-". */
+export const looseKey = (s: string | null | undefined): string =>
+  nameKey(s)
+    .replace(/\bpremium\b/g, ' ')
+    .replace(FINISHES, ' ')
+    .replace(/[\/\-_,()]+/g, ' ')
+    .replace(THICKNESS, m => m.replace(/\s+/g, ''))   // "3 cm" -> "3cm"
+    .replace(/\s+/g, ' ').trim();
+
+/** Mesma pedra em qualquer espessura. */
+export const stoneKey = (s: string | null | undefined): string =>
+  looseKey(s).replace(THICKNESS, ' ').replace(/\s+/g, ' ').trim();
+
+export interface ThumbIndex { exact: Record<string, string>; loose: Record<string, string>; stone: Record<string, string> }
+
+/** URL do thumb para um produto do ERP: exato > mesma espessura > mesma pedra. */
+export function thumbFor(idx: ThumbIndex, product: string): string | null {
+  return idx.exact[nameKey(product)] ?? idx.loose[looseKey(product)] ?? idx.stone[stoneKey(product)] ?? null;
+}
+
 function thumbUrl(thumbKey: unknown): string | null {
   if (typeof thumbKey !== 'string') return null;
   const m = /thumbs\/([0-9a-f]+)\.jpg$/.exec(thumbKey);
   return m ? `${IMG_BASE}/api/mobile/v1/thumb/${m[1]}` : null;
 }
 
-async function loadThumbMap(): Promise<Record<string, string>> {
+async function loadThumbMap(): Promise<ThumbIndex> {
   const r = await db.execute(sql`
     WITH latest AS (
       SELECT s.id AS scraper_id, max(j.id) AS job_id
@@ -42,22 +72,30 @@ async function loadThumbMap(): Promise<Record<string, string>> {
     WHERE sh.item_name IS NOT NULL
     GROUP BY sh.item_name
   `);
-  const out: Record<string, string> = {};
-  for (const row of r.rows) {
+  const idx: ThumbIndex = { exact: {}, loose: {}, stone: {} };
+  // ordem estável por nome: nos fallbacks, o primeiro nome (alfabético) vence
+  const rows = [...r.rows].sort((a, b) => String(a.item_name).localeCompare(String(b.item_name)));
+  for (const row of rows) {
     const url = thumbUrl(row.thumb_key);
-    if (url) out[nameKey(String(row.item_name))] = url;
+    if (!url) continue;
+    const name = String(row.item_name);
+    idx.exact[nameKey(name)] = url;
+    idx.loose[looseKey(name)] ??= url;
+    idx.stone[stoneKey(name)] ??= url;
   }
-  return out;
+  return idx;
 }
 
-/** nameKey(product) -> URL do thumb. Cacheado 5 min; em falha do banco local devolve o último mapa (ou vazio). */
-export async function pacshoreThumbMap(): Promise<Record<string, string>> {
+const EMPTY_INDEX: ThumbIndex = { exact: {}, loose: {}, stone: {} };
+
+/** Índice de thumbs do pacshore (ver thumbFor). Cacheado 5 min; em falha do banco local devolve o último (ou vazio). */
+export async function pacshoreThumbMap(): Promise<ThumbIndex> {
   try {
-    const out = await cached<Record<string, string>>('pacshore:thumbs', loadThumbMap);
-    return out.body ?? {};
+    const out = await cached<ThumbIndex>('pacshore:thumbs', loadThumbMap);
+    return out.body ?? EMPTY_INDEX;
   } catch (err) {
     console.error('[pacshore] thumb map indisponível:', err instanceof Error ? err.message : err);
-    return {};
+    return EMPTY_INDEX;
   }
 }
 
