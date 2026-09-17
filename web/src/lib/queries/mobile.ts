@@ -213,20 +213,51 @@ function thumbUrl(thumbKey: unknown): string | null {
 /* ------------------------------------------------------------------ */
 
 export interface InventoryRow { itemName: string; category: string | null; slabs: number; onHold: number; sources: string[]; locations: string[]; imageUrl: string | null }
+export interface Facet { key: string; label: string; count: number }
+export interface Facets { types: Facet[]; thicknesses: Facet[]; regions: Facet[]; locations: Facet[] }
 export interface Inventory {
   totalSlabs: number; totalMaterials: number; page: number; pageSize: number;
-  sources: { slug: string; label: string }[]; rows: InventoryRow[];
+  sources: { slug: string; label: string }[]; facets: Facets; rows: InventoryRow[];
+}
+export const MARKET_INVENTORY_STATUS = ['available', 'hold'] as const;
+export const MARKET_INVENTORY_SORT = ['slabs', 'name'] as const;
+export interface InventoryOpts {
+  q?: string | null; source?: string | null; location?: string[] | null;
+  type?: string[] | null; thickness?: string[] | null;
+  status?: typeof MARKET_INVENTORY_STATUS[number] | null; sort?: typeof MARKET_INVENTORY_SORT[number] | null;
+  page: number; pageSize: number;
 }
 
-export async function getMobileInventory(opts: { q?: string | null; source?: string | null; page: number; pageSize: number }): Promise<Inventory> {
+/**
+ * Espessura dos concorrentes normalizada: o campo cru varia ("3", "2cm",
+ * "12mm", "1.8", "2 3/4"). Regra: primeiro número (vírgula = ponto) + unidade
+ * explícita; sem unidade, >= 6 é mm (12, 18) e < 6 é cm -> "3 cm", "1.8 cm",
+ * "12 mm". Frações e textos sem número inicial ficam de fora (NULL).
+ */
+const THICKNESS_NORM = sql`
+  (SELECT CASE WHEN n IS NULL THEN NULL
+               WHEN coalesce(u, CASE WHEN n >= 6 THEN 'mm' ELSE 'cm' END) = 'mm' THEN rtrim(rtrim(n::text, '0'), '.') || ' mm'
+               ELSE rtrim(rtrim(n::text, '0'), '.') || ' cm' END
+   FROM (SELECT replace((regexp_match(sh.thickness, '^\s*(\d+(?:[.,]\d+)?)'))[1], ',', '.')::numeric AS n,
+                lower((regexp_match(sh.thickness, '(cm|mm)', 'i'))[1]) AS u) t)`;
+
+const FACET_MAX = 12;
+const nkey = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+const listOrNull = (v?: string[] | null): string[] | null => (v && v.length ? v : null);
+
+export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory> {
   const { page, pageSize } = opts;
   const q = opts.q?.trim() ? sql` AND sh.item_name ILIKE ${'%' + opts.q.trim() + '%'}` : sql``;
-  const [rows, sources] = await Promise.all([
+  const locs = listOrNull(opts.location?.filter(v => v && v !== 'all'));
+  const lf = locs ? sql` AND sh.location = ANY(${locs}::text[])` : sql``;
+  // base = snapshot atual filtrado por source / q / location; facets vêm daqui.
+  const [rows, facetRows, sources] = await Promise.all([
     db.execute(sql`
       WITH latest AS (${latestCte(opts.source)}),
       grouped AS (
         SELECT coalesce(sh.item_name, '(unnamed)') AS item_name,
                mode() WITHIN GROUP (ORDER BY sh.category_name) FILTER (WHERE sh.category_name <> '') AS category,
+               mode() WITHIN GROUP (ORDER BY tn.t) FILTER (WHERE tn.t IS NOT NULL) AS thickness,
                count(*)::int AS slabs,
                count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
@@ -234,27 +265,61 @@ export async function getMobileInventory(opts: { q?: string | null; source?: str
                (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
-        WHERE 1 = 1${q}
+        CROSS JOIN LATERAL (SELECT ${THICKNESS_NORM} AS t) tn
+        WHERE 1 = 1${q}${lf}
         GROUP BY sh.item_name
       )
-      SELECT *, count(*) OVER ()::int AS total_materials, sum(slabs) OVER ()::int AS total_slabs
-      FROM grouped
-      ORDER BY slabs DESC, item_name
-      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+      SELECT * FROM grouped ORDER BY slabs DESC, item_name
+    `),
+    db.execute(sql`
+      WITH latest AS (${latestCte(opts.source)}),
+      base AS (
+        SELECT sh.category_name, sh.location, ${THICKNESS_NORM} AS thickness_n
+        FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+        WHERE 1 = 1${q}${lf}
+      )
+      SELECT axis, key, n FROM (
+        SELECT 'types' AS axis, nullif(btrim(category_name), '') AS key, count(*)::int AS n FROM base GROUP BY 2
+        UNION ALL SELECT 'thicknesses', thickness_n, count(*)::int FROM base GROUP BY 2
+        UNION ALL SELECT 'locations', nullif(btrim(location), ''), count(*)::int FROM base GROUP BY 2
+      ) f WHERE key IS NOT NULL
+      ORDER BY axis, n DESC, key
     `),
     db.execute(sql`SELECT name FROM scrapers WHERE enabled = true AND kind = 'competitor' ORDER BY name`),
   ]);
-  const first = rows.rows[0];
-  return {
-    totalSlabs: num(first?.total_slabs), totalMaterials: num(first?.total_materials), page, pageSize,
-    sources: sources.rows.map(r => ({ slug: String(r.name), label: sourceLabel(String(r.name)) })),
-    rows: rows.rows.map(r => ({
+
+  let all = rows.rows.map(r => ({
+    row: {
       itemName: String(r.item_name), category: (r.category as string | null) ?? null,
       slabs: num(r.slabs), onHold: num(r.on_hold),
       sources: ((r.sources as string[]) ?? []).map(sourceLabel),
       locations: (r.locations as string[]) ?? [],
       imageUrl: thumbUrl(r.thumb_key),
-    })),
+    } satisfies InventoryRow,
+    thickness: (r.thickness as string | null) ?? null,
+  }));
+  const types = listOrNull(opts.type?.map(nkey));
+  const thick = listOrNull(opts.thickness?.map(nkey));
+  if (types) all = all.filter(x => x.row.category && types.includes(nkey(x.row.category)));
+  if (thick) all = all.filter(x => x.thickness && thick.includes(nkey(x.thickness)));
+  if (opts.status === 'available') all = all.filter(x => x.row.slabs - x.row.onHold > 0);
+  if (opts.status === 'hold') all = all.filter(x => x.row.onHold > 0);
+  const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' });
+  if (opts.sort === 'name') all.sort((a, b) => byName(a.row.itemName, b.row.itemName));
+  else all.sort((a, b) => b.row.slabs - a.row.slabs || byName(a.row.itemName, b.row.itemName));
+
+  const facets: Facets = { types: [], thicknesses: [], regions: [], locations: [] };
+  for (const r of facetRows.rows) {
+    const axis = String(r.axis) as keyof Facets;
+    if (!(axis in facets) || facets[axis].length >= FACET_MAX) continue;
+    facets[axis].push({ key: String(r.key), label: String(r.key), count: num(r.n) });
+  }
+
+  return {
+    totalSlabs: all.reduce((n, x) => n + x.row.slabs, 0), totalMaterials: all.length, page, pageSize,
+    sources: sources.rows.map(r => ({ slug: String(r.name), label: sourceLabel(String(r.name)) })),
+    facets,
+    rows: all.slice((page - 1) * pageSize, page * pageSize).map(x => x.row),
   };
 }
 

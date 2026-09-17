@@ -643,13 +643,36 @@ export interface ErpInventoryRow {
   slabs: number; available: number; onHold: number; onSo: number; inTransit: number;
   assetValue: number; avgSizeIn: [number, number] | null; locations: string[]; imageUrl: string | null;
 }
+export interface Facet { key: string; label: string; count: number }
+export interface Facets { types: Facet[]; thicknesses: Facet[]; regions: Facet[]; locations: Facet[] }
 export interface ErpInventory {
   asOf: string; stale: boolean;
   totalSlabs: number; totalValue: number; totalMaterials: number;
   page: number; pageSize: number;
   locations: { code: string; label: string }[];
+  facets: Facets;
   rows: ErpInventoryRow[];
 }
+export const INVENTORY_STATUS = ['available', 'hold', 'transit', 'photo'] as const;
+export const INVENTORY_SORT = ['slabs', 'value', 'name'] as const;
+export type InventoryStatus = typeof INVENTORY_STATUS[number];
+export type InventorySort = typeof INVENTORY_SORT[number];
+export interface ErpInventoryOpts {
+  q?: string | null; location?: string[] | null; region?: string[] | null;
+  type?: string[] | null; thickness?: string[] | null;
+  status?: InventoryStatus | null; sort?: InventorySort | null;
+  page: number; pageSize: number;
+}
+
+/**
+ * Espessura da Pacific: erp.stock não tem coluna; vem do NOME do produto
+ * ("2cm Taj Mahal", "1.2cm …", "12mm Neolith …") normalizada para "2 cm",
+ * "1.2 cm", "12 mm". \y = limite de palavra no regex do Postgres. Sem
+ * espessura no nome -> NULL (fora do facet e do filtro).
+ */
+const ERP_THICKNESS_SQL = `
+  (SELECT CASE WHEN m IS NULL THEN NULL ELSE m[1] || ' ' || lower(m[2]) END
+   FROM (SELECT regexp_match(product, '\\y(\\d+(?:\\.\\d+)?)\\s*(cm|mm)\\y', 'i') AS m) t)`;
 
 /**
  * Estoque em mãos por produto: uma linha de erp.stock = uma chapa (serial).
@@ -659,12 +682,21 @@ export interface ErpInventory {
  * (status in_transit do stock) ficam só em lots[].status.
  * totalSlabs = INVENTORY_SLABS_EXPR (igual a kpis.inventorySlabs).
  */
+/**
+ * base = estoque de chapas filtrado por q / location / region (os facets são
+ * calculados sobre ela). type (= erp.stock.category: Quartzite, Marble…),
+ * thickness, status e sort são aplicados em memória sobre as linhas agrupadas
+ * (≤ 3 mil produtos), porque status=photo depende do índice de fotos e
+ * porque assim os facets ficam consistentes com o contrato.
+ */
 const INVENTORY_SQL = `
 WITH base AS (
-  SELECT * FROM erp.stock
+  SELECT s.*, ${ERP_THICKNESS_SQL} AS thickness_n, l.region
+  FROM erp.stock s LEFT JOIN erp.locations l ON l.code = btrim(s.location)
   WHERE ${SLAB_ITEMS}
-    AND ($1::text IS NULL OR coalesce(btrim(location), '') = $1)
-    AND ($2::text IS NULL OR product ILIKE $2 OR coalesce(category, '') ILIKE $2 OR coalesce(type, '') ILIKE $2)
+    AND ($1::text[] IS NULL OR coalesce(btrim(s.location), '') = ANY($1))
+    AND ($2::text IS NULL OR s.product ILIKE $2 OR coalesce(s.category, '') ILIKE $2 OR coalesce(s.type, '') ILIKE $2)
+    AND ($3::text[] IS NULL OR l.region = ANY($3))
 ),
 po AS (
   SELECT product, coalesce(sum(slabs), 0) AS in_transit FROM erp.in_transit
@@ -674,6 +706,7 @@ g AS (
   SELECT b.product,
          mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
          mode() WITHIN GROUP (ORDER BY type)     FILTER (WHERE coalesce(btrim(type), '') <> '')     AS type,
+         max(thickness_n)                                AS thickness,
          count(*)                                        AS slabs,
          count(*) FILTER (WHERE status = 'in_stock')     AS available,
          count(*) FILTER (WHERE status = 'on_hold')      AS on_hold,
@@ -688,11 +721,27 @@ g AS (
   WHERE coalesce(btrim(b.product), '') <> ''
   GROUP BY b.product
 )
-SELECT g.*, count(*) OVER () AS total_materials, sum(inv_slabs) OVER () AS total_slabs, sum(asset_value) OVER () AS total_value,
-       (SELECT max(snapshot_date) FROM erp.stock) AS snapshot
+SELECT g.*, (SELECT max(snapshot_date) FROM erp.stock) AS snapshot
 FROM g
-ORDER BY slabs DESC, product
-LIMIT $3 OFFSET $4`;
+ORDER BY slabs DESC, product`;
+
+/** Facets (chapas = INVENTORY_SLABS_EXPR) sobre a mesma base de q/location/region; eixo locations só com lojas (region não nulo). */
+const INVENTORY_FACETS_SQL = `
+WITH base AS (
+  SELECT s.*, ${ERP_THICKNESS_SQL} AS thickness_n, l.region
+  FROM erp.stock s LEFT JOIN erp.locations l ON l.code = btrim(s.location)
+  WHERE ${SLAB_ITEMS}
+    AND ($1::text[] IS NULL OR coalesce(btrim(s.location), '') = ANY($1))
+    AND ($2::text IS NULL OR s.product ILIKE $2 OR coalesce(s.category, '') ILIKE $2 OR coalesce(s.type, '') ILIKE $2)
+    AND ($3::text[] IS NULL OR l.region = ANY($3))
+)
+SELECT axis, key, n FROM (
+  SELECT 'types' AS axis, nullif(btrim(category), '') AS key, ${INVENTORY_SLABS_EXPR} AS n FROM base GROUP BY 2
+  UNION ALL SELECT 'thicknesses', thickness_n, ${INVENTORY_SLABS_EXPR} FROM base GROUP BY 2
+  UNION ALL SELECT 'regions', region, ${INVENTORY_SLABS_EXPR} FROM base GROUP BY 2
+  UNION ALL SELECT 'locations', CASE WHEN region IS NOT NULL THEN nullif(btrim(location), '') END, ${INVENTORY_SLABS_EXPR} FROM base GROUP BY 2
+) f WHERE key IS NOT NULL AND n > 0
+ORDER BY axis, n DESC, key`;
 
 /** Só LOJAS (códigos com region em erp.locations); depósitos e terceiros entram nas contagens, não no filtro. */
 const STOCK_LOCATIONS_SQL = `
@@ -701,38 +750,79 @@ WHERE l.region IS NOT NULL
   AND EXISTS (SELECT 1 FROM erp.stock s WHERE btrim(s.location) = l.code AND ${SLAB_ITEMS})
 ORDER BY l.code`;
 
-export async function getErpInventory(opts: { q?: string | null; location?: string | null; page: number; pageSize: number }): Promise<ErpInventory> {
+const listOrNull = (v?: string[] | null): string[] | null => (v && v.length ? v : null);
+const FACET_MAX = 12;
+
+/** Agrupa linhas (axis, key, n) em Facets com até 12 por eixo e label resolvido. */
+export function buildFacets(rows: { axis: unknown; key: unknown; n: unknown }[], label: (axis: string, key: string) => string): Facets {
+  const out: Facets = { types: [], thicknesses: [], regions: [], locations: [] };
+  for (const r of rows) {
+    const axis = String(r.axis) as keyof Facets;
+    if (!(axis in out) || out[axis].length >= FACET_MAX) continue;
+    const key = String(r.key);
+    out[axis].push({ key, label: label(axis, key), count: int(r.n) });
+  }
+  return out;
+}
+
+export async function getErpInventory(opts: ErpInventoryOpts): Promise<ErpInventory> {
   const { page, pageSize } = opts;
-  const loc = opts.location && opts.location !== 'all' ? opts.location.trim() : null;
+  const loc = listOrNull(opts.location?.filter(v => v && v !== 'all'));
+  const region = listOrNull(opts.region);
   const q = opts.q?.trim() ? `%${opts.q.trim()}%` : null;
-  const [rows, locs, labels, thumbs] = await Promise.all([
-    erpQuery(INVENTORY_SQL, [loc, q, pageSize, (page - 1) * pageSize]),
+  const [grouped, facetRows, locs, labels, thumbs] = await Promise.all([
+    erpQuery(INVENTORY_SQL, [loc, q, region]),
+    erpQuery<{ axis: string; key: string | null; n: unknown }>(INVENTORY_FACETS_SQL, [loc, q, region]),
     erpQuery<{ code: string }>(STOCK_LOCATIONS_SQL),
     locationLabels(),
     pacshoreThumbMap(),
   ]);
-  const first = rows[0];
-  const snapshot = dayOf(first?.snapshot) ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.stock'))[0]?.s;
-  return {
-    asOf: dayOf(snapshot) ?? '',
-    stale: false,
-    totalSlabs: int(first?.total_slabs), totalValue: usd(first?.total_value), totalMaterials: int(first?.total_materials),
-    page, pageSize,
-    locations: locs.map(l => ({ code: l.code, label: labelOf(labels, l.code) })),
-    rows: rows.map(r => {
-      const product = String(r.product);
-      return {
+  const snapshot = grouped[0]?.snapshot ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.stock'))[0]?.s;
+
+  let all = grouped.map(r => {
+    const product = String(r.product);
+    return {
+      row: {
         product,
         category: (r.category as string | null) ?? null,
         type: (r.type as string | null) ?? null,
-        thickness: thicknessOf(product),
+        thickness: (r.thickness as string | null) ?? thicknessOf(product),
         slabs: int(r.slabs), available: int(r.available), onHold: int(r.on_hold), onSo: int(r.on_so), inTransit: int(r.in_transit),
         assetValue: usd(r.asset_value),
-        avgSizeIn: r.avg_len != null && r.avg_wid != null ? [int(r.avg_len), int(r.avg_wid)] : null,
+        avgSizeIn: (r.avg_len != null && r.avg_wid != null ? [int(r.avg_len), int(r.avg_wid)] : null) as [number, number] | null,
         locations: (r.locations as string[]) ?? [],
         imageUrl: thumbFor(thumbs, product),
-      };
-    }),
+      } satisfies ErpInventoryRow,
+      invSlabs: int(r.inv_slabs),
+    };
+  });
+  const types = listOrNull(opts.type?.map(nameKey));
+  const thick = listOrNull(opts.thickness?.map(nameKey));
+  if (types) all = all.filter(x => x.row.category && types.includes(nameKey(x.row.category)));
+  if (thick) all = all.filter(x => x.row.thickness && thick.includes(nameKey(x.row.thickness)));
+  switch (opts.status) {
+    case 'available': all = all.filter(x => x.row.available > 0); break;
+    case 'hold':      all = all.filter(x => x.row.onHold > 0); break;
+    case 'transit':   all = all.filter(x => x.row.inTransit > 0); break;
+    case 'photo':     all = all.filter(x => x.row.imageUrl != null); break;
+  }
+  const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' });
+  switch (opts.sort ?? 'slabs') {
+    case 'value': all.sort((a, b) => b.row.assetValue - a.row.assetValue || byName(a.row.product, b.row.product)); break;
+    case 'name':  all.sort((a, b) => byName(a.row.product, b.row.product)); break;
+    default:      all.sort((a, b) => b.row.slabs - a.row.slabs || byName(a.row.product, b.row.product));
+  }
+
+  return {
+    asOf: dayOf(snapshot) ?? '',
+    stale: false,
+    totalSlabs: all.reduce((n, x) => n + x.invSlabs, 0),
+    totalValue: all.reduce((n, x) => n + x.row.assetValue, 0),
+    totalMaterials: all.length,
+    page, pageSize,
+    locations: locs.map(l => ({ code: l.code, label: labelOf(labels, l.code) })),
+    facets: buildFacets(facetRows, (axis, key) => (axis === 'locations' ? labelOf(labels, key) : key)),
+    rows: all.slice((page - 1) * pageSize, page * pageSize).map(x => x.row),
   };
 }
 
