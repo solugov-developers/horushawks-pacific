@@ -17,6 +17,8 @@ export const SOURCES: SourceMeta[] = [
   { slug: 'vmcstone',           label: 'VMC',                table: 'vmcstone_slabs' },
   { slug: 'zucchistones',       label: 'Zucchi',             table: 'zucchistones_slabs' },
   { slug: 'irgstone',           label: 'IRG Stone',          table: 'irgstone_slabs' },
+  // Fonte PRÓPRIA (scrapers.kind = 'own'): fora do módulo Mercado; só fotos e pareamento.
+  { slug: 'pacshore',           label: 'Pacific Shore',      table: 'pacshore_slabs' },
 ];
 
 export const ALL_SOURCES = 'all';

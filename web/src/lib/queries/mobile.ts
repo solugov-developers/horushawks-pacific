@@ -15,6 +15,8 @@ export function sourceLabel(slug: string): string {
 }
 
 const STALE_HOURS = 36;
+/** Módulo Mercado = só concorrentes. A fonte própria (pacshore, kind = 'own') fica de fora. */
+const COMPETITOR_IDS = sql`(SELECT id FROM scrapers WHERE kind = 'competitor')`;
 export const MOVEMENT_KINDS = ['added', 'removed', 'held', 'released', 'transferred', 'price_changed', 'qty_changed'] as const;
 export type MovementKind = typeof MOVEMENT_KINDS[number];
 
@@ -24,7 +26,7 @@ function latestCte(source?: string | null): SQL {
   return sql`
     SELECT s.id AS scraper_id, s.name, max(j.id) AS job_id
     FROM jobs j JOIN scrapers s ON s.id = j.scraper_id
-    WHERE j.status = 'done' AND s.enabled = true${filter}
+    WHERE j.status = 'done' AND s.enabled = true AND s.kind = 'competitor'${filter}
     GROUP BY s.id, s.name
   `;
 }
@@ -84,19 +86,19 @@ export async function getMobileOverview(): Promise<Overview> {
       FROM scrapers s
       LEFT JOIN latest l ON l.scraper_id = s.id
       LEFT JOIN jobs j ON j.id = l.job_id
-      WHERE s.enabled = true
+      WHERE s.enabled = true AND s.kind = 'competitor'
       ORDER BY slabs DESC NULLS LAST, s.name
     `),
     db.execute(sql`
       SELECT count(*) FILTER (WHERE kind = 'added')::int AS added,
              count(*) FILTER (WHERE kind = 'removed')::int AS removed
-      FROM movements WHERE detected_at > now() - interval '7 days'
+      FROM movements WHERE detected_at > now() - interval '7 days' AND scraper_id IN ${COMPETITOR_IDS}
     `),
     db.execute(sql`
       WITH week_jobs AS (
         SELECT s.id AS scraper_id, max(j.id) AS job_id
         FROM jobs j JOIN scrapers s ON s.id = j.scraper_id
-        WHERE j.status = 'done' AND s.enabled = true AND j.finished_at <= now() - interval '7 days'
+        WHERE j.status = 'done' AND s.enabled = true AND s.kind = 'competitor' AND j.finished_at <= now() - interval '7 days'
         GROUP BY s.id
       )
       SELECT count(sh.id)::int AS slabs, count(DISTINCT w.scraper_id)::int AS scrapers
@@ -157,7 +159,7 @@ export async function getMobileSales(period: number, source?: string | null): Pr
                            AND m.detected_at >  now() - interval '1 day' * ${days} * 2)::int AS prev,
         count(DISTINCT m.item_name) FILTER (WHERE m.detected_at > now() - interval '1 day' * ${days})::int AS materials
       FROM movements m JOIN scrapers s ON s.id = m.scraper_id
-      WHERE m.kind = 'removed'${sf}
+      WHERE m.kind = 'removed' AND s.kind = 'competitor'${sf}
     `),
     db.execute(sql`
       SELECT coalesce(m.item_name, '(unnamed)') AS item_name,
@@ -167,7 +169,7 @@ export async function getMobileSales(period: number, source?: string | null): Pr
                WHERE sh.item_name = m.item_name AND sh.category_name <> ''
                ORDER BY sh.id DESC LIMIT 1) AS category
       FROM movements m JOIN scrapers s ON s.id = m.scraper_id
-      WHERE m.kind = 'removed' AND m.detected_at > now() - interval '1 day' * ${days}${sf}
+      WHERE m.kind = 'removed' AND s.kind = 'competitor' AND m.detected_at > now() - interval '1 day' * ${days}${sf}
       GROUP BY m.item_name
       ORDER BY sold DESC, item_name
       LIMIT 50
@@ -240,7 +242,7 @@ export async function getMobileInventory(opts: { q?: string | null; source?: str
       ORDER BY slabs DESC, item_name
       LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
     `),
-    db.execute(sql`SELECT name FROM scrapers WHERE enabled = true ORDER BY name`),
+    db.execute(sql`SELECT name FROM scrapers WHERE enabled = true AND kind = 'competitor' ORDER BY name`),
   ]);
   const first = rows.rows[0];
   return {
@@ -288,12 +290,12 @@ export async function getMobileMaterial(itemName: string): Promise<MaterialDetai
     db.execute(sql`
       SELECT count(*) FILTER (WHERE kind = 'added')::int AS added,
              count(*) FILTER (WHERE kind = 'removed')::int AS removed
-      FROM movements WHERE item_name = ${itemName} AND detected_at > now() - interval '30 days'
+      FROM movements WHERE item_name = ${itemName} AND detected_at > now() - interval '30 days' AND scraper_id IN ${COMPETITOR_IDS}
     `),
     db.execute(sql`
       WITH g AS (
         SELECT m.detected_at::date AS d, m.kind, m.scraper_id, count(*)::int AS n, min(m.id) AS sample_id
-        FROM movements m WHERE m.item_name = ${itemName}
+        FROM movements m WHERE m.item_name = ${itemName} AND m.scraper_id IN ${COMPETITOR_IDS}
         GROUP BY 1, 2, 3
         ORDER BY d DESC, n DESC LIMIT 20
       )
@@ -344,13 +346,13 @@ export interface MovementFeed { asOf: string | null; page: number; pageSize: num
 
 export async function getMobileMovements(opts: { kind?: string | null; page: number; pageSize: number }): Promise<MovementFeed> {
   const { page, pageSize } = opts;
-  const kf = opts.kind && opts.kind !== 'all' ? sql` WHERE m.kind = ${opts.kind}` : sql``;
+  const kf = opts.kind && opts.kind !== 'all' ? sql` AND m.kind = ${opts.kind}` : sql``;
   const [rows, asOf] = await Promise.all([
     db.execute(sql`
       WITH g AS (
         SELECT m.detected_at::date AS d, m.kind, coalesce(m.item_name, '(unnamed)') AS item_name, m.scraper_id,
                count(*)::int AS n, min(m.id) AS sample_id
-        FROM movements m${kf}
+        FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS}${kf}
         GROUP BY 1, 2, 3, 4
       ),
       pg AS (
@@ -369,7 +371,7 @@ export async function getMobileMovements(opts: { kind?: string | null; page: num
       ) loc ON true
       ORDER BY pg.d DESC, pg.n DESC, pg.item_name
     `),
-    db.execute(sql`SELECT max(detected_at) AS as_of FROM movements`),
+    db.execute(sql`SELECT max(detected_at) AS as_of FROM movements WHERE scraper_id IN ${COMPETITOR_IDS}`),
   ]);
   return {
     asOf: iso(asOf.rows[0]?.as_of), page, pageSize, total: num(rows.rows[0]?.total),
