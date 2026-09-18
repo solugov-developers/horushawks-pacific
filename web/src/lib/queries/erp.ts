@@ -1206,12 +1206,21 @@ export interface ErpHoldRow {
 }
 export interface ErpHolds {
   asOf: string; stale: boolean;
-  summary: { slabs: number; value: number; customers: number; expiringSoon: number; expired: number };
+  /** stale60 = chapas com days >= 60 (revisão 2026-09-18: a tela trabalha por idade da reserva) */
+  summary: { slabs: number; value: number; customers: number; expiringSoon: number; expired: number; stale60: number; stale60Value: number };
   page: number; pageSize: number; total: number;
   rows: ErpHoldRow[];
 }
 
-/** erp.on_hold: uma linha por serial em hold. expiring = vence em <= 3 dias; expired = expiry_date < hoje. */
+/**
+ * erp.on_hold: uma linha por serial em hold, ordenada por heldSince ASC (mais
+ * antiga primeiro). days = hoje - heldSince; minDays/maxDays filtram por days.
+ * expiring = vence em <= 3 dias; expired = expiry_date < hoje (mantidos no payload).
+ */
+const HOLDS_WHERE = `
+  WHERE ($1::text IS NULL OR btrim(location) = $1) AND ($2::text IS NULL OR btrim(sales_rep) = $2)
+    AND ($3::int IS NULL OR current_date - coalesce(hold_date, created_date) >= $3)
+    AND ($4::int IS NULL OR current_date - coalesce(hold_date, created_date) <= $4)`;
 const HOLDS_SQL = `
 SELECT max(snapshot_date) OVER () AS snapshot, count(*) OVER () AS total,
        product, serial, coalesce(slabs, 1) AS slabs, coalesce(total_price, 0) AS value,
@@ -1221,32 +1230,33 @@ SELECT max(snapshot_date) OVER () AS snapshot, count(*) OVER () AS total,
        CASE WHEN expiry_date < current_date THEN 'expired'
             WHEN expiry_date <= current_date + 3 THEN 'expiring' ELSE 'active' END AS status,
        nullif(btrim(job_name), '') AS job_name
-FROM erp.on_hold
-WHERE ($1::text IS NULL OR btrim(location) = $1) AND ($2::text IS NULL OR btrim(sales_rep) = $2)
-ORDER BY expiry_date ASC NULLS LAST, product, serial
-LIMIT $3 OFFSET $4`;
+FROM erp.on_hold${HOLDS_WHERE}
+ORDER BY coalesce(hold_date, created_date) ASC NULLS LAST, product, serial
+LIMIT $5 OFFSET $6`;
 const HOLDS_SUMMARY_SQL = `
 SELECT coalesce(sum(coalesce(slabs, 1)), 0) AS slabs, coalesce(sum(total_price), 0) AS value,
        count(DISTINCT nullif(btrim(customer), '')) AS customers,
        count(*) FILTER (WHERE expiry_date >= current_date AND expiry_date <= current_date + 3) AS expiring,
-       count(*) FILTER (WHERE expiry_date < current_date) AS expired
-FROM erp.on_hold
-WHERE ($1::text IS NULL OR btrim(location) = $1) AND ($2::text IS NULL OR btrim(sales_rep) = $2)`;
+       count(*) FILTER (WHERE expiry_date < current_date) AS expired,
+       coalesce(sum(coalesce(slabs, 1)) FILTER (WHERE current_date - coalesce(hold_date, created_date) >= 60), 0) AS stale60,
+       coalesce(sum(total_price)        FILTER (WHERE current_date - coalesce(hold_date, created_date) >= 60), 0) AS stale60_value
+FROM erp.on_hold${HOLDS_WHERE}`;
 
-export async function getErpHolds(opts: { location?: string | null; rep?: string | null; page: number; pageSize: number }): Promise<ErpHolds> {
+export async function getErpHolds(opts: { location?: string | null; rep?: string | null; minDays?: number | null; maxDays?: number | null; page: number; pageSize: number }): Promise<ErpHolds> {
   const loc = opts.location && opts.location !== 'all' ? opts.location.trim() : null;
   const rep = opts.rep?.trim() || null;
+  const minDays = opts.minDays ?? null, maxDays = opts.maxDays ?? null;
   const { page, pageSize } = opts;
   const [rows, sum, labels] = await Promise.all([
-    erpQuery(HOLDS_SQL, [loc, rep, pageSize, (page - 1) * pageSize]),
-    erpQuery(HOLDS_SUMMARY_SQL, [loc, rep]),
+    erpQuery(HOLDS_SQL, [loc, rep, minDays, maxDays, pageSize, (page - 1) * pageSize]),
+    erpQuery(HOLDS_SUMMARY_SQL, [loc, rep, minDays, maxDays]),
     locationLabels(),
   ]);
   const m = sum[0] ?? {};
   const snapshot = rows[0]?.snapshot ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.on_hold'))[0]?.s;
   return {
     asOf: dayOf(snapshot) ?? '', stale: false,
-    summary: { slabs: int(m.slabs), value: usd(m.value), customers: int(m.customers), expiringSoon: int(m.expiring), expired: int(m.expired) },
+    summary: { slabs: int(m.slabs), value: usd(m.value), customers: int(m.customers), expiringSoon: int(m.expiring), expired: int(m.expired), stale60: int(m.stale60), stale60Value: usd(m.stale60_value) },
     page, pageSize, total: int(rows[0]?.total),
     rows: rows.map(r => ({
       product: String(r.product ?? ''), serial: (r.serial as string | null) ?? null,

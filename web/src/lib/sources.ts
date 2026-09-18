@@ -3,10 +3,13 @@
  * Define rótulos, ícones e a tabela específica de cada um.
  * Usar `ALL_SOURCES` quando "todas as fontes" estiver selecionada.
  */
+export type SourceUnit = 'slabs' | 'products';
 export interface SourceMeta {
   slug: string;     // = scrapers.name
   label: string;    // pretty
   table: string;    // <source>_slabs (pg ident)
+  /** o que cada linha da fonte representa: chapa (padrão) ou produto de catálogo (ex.: loja Shopify) */
+  unit?: SourceUnit;
 }
 
 export const SOURCES: SourceMeta[] = [
@@ -17,9 +20,15 @@ export const SOURCES: SourceMeta[] = [
   { slug: 'vmcstone',           label: 'VMC',                table: 'vmcstone_slabs' },
   { slug: 'zucchistones',       label: 'Zucchi',             table: 'zucchistones_slabs' },
   { slug: 'irgstone',           label: 'IRG Stone',          table: 'irgstone_slabs' },
+  // Loja Shopify: 1 linha = 1 produto (não uma chapa); unit = 'products'.
+  { slug: 'imperialtile',       label: 'Imperial Tile',      table: 'imperialtile_slabs', unit: 'products' },
   // Fonte PRÓPRIA (scrapers.kind = 'own'): fora do módulo Mercado; só fotos e pareamento.
   { slug: 'pacshore',           label: 'Pacific Shore',      table: 'pacshore_slabs' },
 ];
+
+export function sourceUnit(slug: string): SourceUnit {
+  return SOURCES.find(s => s.slug === slug)?.unit ?? 'slabs';
+}
 
 export const ALL_SOURCES = 'all';
 

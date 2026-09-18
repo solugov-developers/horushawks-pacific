@@ -1,6 +1,6 @@
 import { db } from '@/lib/db/client';
 import { sql, type SQL } from 'drizzle-orm';
-import { SOURCES, EXCLUDED_CATEGORIES } from '@/lib/sources';
+import { SOURCES, EXCLUDED_CATEGORIES, sourceUnit, type SourceUnit } from '@/lib/sources';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -65,7 +65,7 @@ function movementDetail(kind: string, prev: unknown, next: unknown): string | nu
 /* Overview                                                            */
 /* ------------------------------------------------------------------ */
 
-export interface OverviewSource { slug: string; label: string; slabs: number; lastJobAt: string | null; stale: boolean }
+export interface OverviewSource { slug: string; label: string; unit: SourceUnit; slabs: number; lastJobAt: string | null; stale: boolean }
 export interface Overview {
   asOf: string | null;
   totalSlabs: number; weekDeltaPct: number | null;
@@ -118,7 +118,7 @@ export async function getMobileOverview(): Promise<Overview> {
   const srcRows: OverviewSource[] = sources.rows.map(r => {
     const last = iso(r.finished_at);
     return {
-      slug: String(r.name), label: sourceLabel(String(r.name)),
+      slug: String(r.name), label: sourceLabel(String(r.name)), unit: sourceUnit(String(r.name)),
       slabs: num(r.slabs), lastJobAt: last,
       stale: !last || new Date(last).getTime() < staleCutoff,
     };
@@ -217,7 +217,7 @@ export interface Facet { key: string; label: string; count: number }
 export interface Facets { types: Facet[]; thicknesses: Facet[]; regions: Facet[]; locations: Facet[] }
 export interface Inventory {
   totalSlabs: number; totalMaterials: number; page: number; pageSize: number;
-  sources: { slug: string; label: string }[]; facets: Facets; rows: InventoryRow[];
+  sources: { slug: string; label: string; unit: SourceUnit }[]; facets: Facets; rows: InventoryRow[];
 }
 export const MARKET_INVENTORY_STATUS = ['available', 'hold'] as const;
 export const MARKET_INVENTORY_SORT = ['slabs', 'name'] as const;
@@ -358,7 +358,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
 
   return {
     totalSlabs: all.reduce((n, x) => n + x.row.slabs, 0), totalMaterials: all.length, page, pageSize,
-    sources: sources.rows.map(r => ({ slug: String(r.name), label: sourceLabel(String(r.name)) })),
+    sources: sources.rows.map(r => ({ slug: String(r.name), label: sourceLabel(String(r.name)), unit: sourceUnit(String(r.name)) })),
     facets,
     rows: all.slice((page - 1) * pageSize, page * pageSize).map(x => x.row),
   };

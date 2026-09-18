@@ -94,8 +94,26 @@ function resolveSrc(row, srcPath) {
     // do StoneProfits com espaço/[]/() na URL do S3).
     let key = expr.trim();
     let urlEncode = false;
+    let filter = null;
     if (key.endsWith('|url')) { key = key.slice(0, -4).trim(); urlEncode = true; }
-    const v = getPath(row, key);
+    else {
+      // filtros com argumento (Shopify e afins):
+      //   {{tags|tag:Material_}}      -> valor da 1ª tag com o prefixo, sem o prefixo ("Material_porcelain" -> "porcelain")
+      //   {{variants|anytrue:available}} -> "1" se algum item do array tiver o campo verdadeiro; senão vazio (NULL)
+      const m = /^(.*?)\|(tag|anytrue):(.+)$/.exec(key);
+      if (m) { key = m[1].trim(); filter = { kind: m[2], arg: m[3].trim() }; }
+    }
+    let v = getPath(row, key);
+    if (filter && Array.isArray(v)) {
+      if (filter.kind === 'tag') {
+        const hit = v.find((t) => typeof t === 'string' && t.startsWith(filter.arg));
+        v = hit ? hit.slice(filter.arg.length).trim() : null;
+      } else if (filter.kind === 'anytrue') {
+        v = v.some((it) => it && it[filter.arg] === true) ? '1' : null;
+      }
+    } else if (filter) {
+      v = null;
+    }
     if (v == null || v === '') return '';
     anyValue = true;
     return urlEncode ? encodeURIComponent(String(v)) : String(v);
@@ -108,16 +126,22 @@ function resolveSrc(row, srcPath) {
 function pickRowValues(row, colMap, constants) {
   const out = {};
   const usedTops = new Set();
-  for (const [dbCol, srcPath] of Object.entries(colMap)) {
-    const s = String(srcPath);
-    if (s.includes('{{')) {
-      // template: marca TODOS os campos referenciados como usados
-      for (const m of s.matchAll(/\{\{([^}]+)\}\}/g)) usedTops.add(topKey(m[1].trim().split('|')[0].trim()));
-    } else {
-      usedTops.add(topKey(s));
+  for (const [dbCol, srcSpec] of Object.entries(colMap)) {
+    // Lista = alternativas em ordem; vale a primeira que resolver (ex.: categoria
+    // pela tag Material_ e, se não houver, product_type).
+    const alternatives = Array.isArray(srcSpec) ? srcSpec : [srcSpec];
+    let resolved = null;
+    for (const srcPath of alternatives) {
+      const s = String(srcPath);
+      if (s.includes('{{')) {
+        // template: marca TODOS os campos referenciados como usados
+        for (const m of s.matchAll(/\{\{([^}]+)\}\}/g)) usedTops.add(topKey(m[1].trim().split('|')[0].trim()));
+      } else {
+        usedTops.add(topKey(s));
+      }
+      const v = resolveSrc(row, s);
+      if (v != null && v !== '') { resolved = v; break; }
     }
-    const v = resolveSrc(row, s);
-    let resolved = v === undefined ? null : v;
     if (BOOL_COLUMNS.has(dbCol)) {
       resolved = coerceBool(resolved);
     }
