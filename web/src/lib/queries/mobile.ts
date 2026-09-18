@@ -1,6 +1,6 @@
 import { db } from '@/lib/db/client';
 import { sql, type SQL } from 'drizzle-orm';
-import { SOURCES } from '@/lib/sources';
+import { SOURCES, EXCLUDED_CATEGORIES } from '@/lib/sources';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -17,6 +17,20 @@ export function sourceLabel(slug: string): string {
 const STALE_HOURS = 36;
 /** Módulo Mercado = só concorrentes. A fonte própria (pacshore, kind = 'own') fica de fora. */
 const COMPETITOR_IDS = sql`(SELECT id FROM scrapers WHERE kind = 'competitor')`;
+/** Fora do Mercado: categorias que não são chapa (lib/sources.ts). `sh` = alias de slabs_history. */
+const EXCL = [...EXCLUDED_CATEGORIES];
+const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}::text[]))`;
+/** Mesmo filtro para movements (alias m): olha a categoria da linha de slabs_history do próprio movimento. */
+const NOT_EXCLUDED_MOV = sql`NOT EXISTS (
+  SELECT 1 FROM slabs_history x
+  WHERE x.scraper_id = m.scraper_id AND x.source_key = m.source_key
+    AND x.job_id IN (m.job_id, m.prev_job_id) AND x.category_name = ANY(${EXCL}::text[]))`;
+/**
+ * Espessura: coluna thickness da fonte; se vazia (ex.: Encore), o prefixo do
+ * nome do item ("3cm Cristallo", "12mm …"). \y = limite de palavra no Postgres.
+ */
+const THICKNESS_RAW = sql`coalesce(nullif(btrim(sh.thickness), ''),
+  (SELECT m[1] || m[2] FROM (SELECT regexp_match(sh.item_name, '\\y(\\d+(?:\\.\\d+)?)\\s*(cm|mm)\\y', 'i') AS m) t))`;
 export const MOVEMENT_KINDS = ['added', 'removed', 'held', 'released', 'transferred', 'price_changed', 'qty_changed'] as const;
 export type MovementKind = typeof MOVEMENT_KINDS[number];
 
@@ -78,11 +92,12 @@ export async function getMobileOverview(): Promise<Overview> {
              count(DISTINCT sh.category_name) FILTER (WHERE sh.category_name <> '')::int AS categories,
              count(*) FILTER (WHERE sh.on_hold)::int AS on_hold
       FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+      WHERE ${NOT_EXCLUDED_SH}
     `),
     db.execute(sql`
       WITH latest AS (${latestCte()})
       SELECT s.name, l.job_id, j.finished_at,
-             (SELECT count(*)::int FROM slabs_history sh WHERE sh.scraper_id = l.scraper_id AND sh.job_id = l.job_id) AS slabs
+             (SELECT count(*)::int FROM slabs_history sh WHERE sh.scraper_id = l.scraper_id AND sh.job_id = l.job_id AND ${NOT_EXCLUDED_SH}) AS slabs
       FROM scrapers s
       LEFT JOIN latest l ON l.scraper_id = s.id
       LEFT JOIN jobs j ON j.id = l.job_id
@@ -92,7 +107,7 @@ export async function getMobileOverview(): Promise<Overview> {
     db.execute(sql`
       SELECT count(*) FILTER (WHERE kind = 'added')::int AS added,
              count(*) FILTER (WHERE kind = 'removed')::int AS removed
-      FROM movements WHERE detected_at > now() - interval '7 days' AND scraper_id IN ${COMPETITOR_IDS}
+      FROM movements m WHERE m.detected_at > now() - interval '7 days' AND m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}
     `),
     db.execute(sql`
       WITH week_jobs AS (
@@ -102,7 +117,7 @@ export async function getMobileOverview(): Promise<Overview> {
         GROUP BY s.id
       )
       SELECT count(sh.id)::int AS slabs, count(DISTINCT w.scraper_id)::int AS scrapers
-      FROM week_jobs w LEFT JOIN slabs_history sh ON sh.scraper_id = w.scraper_id AND sh.job_id = w.job_id
+      FROM week_jobs w LEFT JOIN slabs_history sh ON sh.scraper_id = w.scraper_id AND sh.job_id = w.job_id AND ${NOT_EXCLUDED_SH}
     `),
   ]);
 
@@ -159,7 +174,7 @@ export async function getMobileSales(period: number, source?: string | null): Pr
                            AND m.detected_at >  now() - interval '1 day' * ${days} * 2)::int AS prev,
         count(DISTINCT m.item_name) FILTER (WHERE m.detected_at > now() - interval '1 day' * ${days})::int AS materials
       FROM movements m JOIN scrapers s ON s.id = m.scraper_id
-      WHERE m.kind = 'removed' AND s.kind = 'competitor'${sf}
+      WHERE m.kind = 'removed' AND s.kind = 'competitor' AND ${NOT_EXCLUDED_MOV}${sf}
     `),
     db.execute(sql`
       SELECT coalesce(m.item_name, '(unnamed)') AS item_name,
@@ -169,7 +184,7 @@ export async function getMobileSales(period: number, source?: string | null): Pr
                WHERE sh.item_name = m.item_name AND sh.category_name <> ''
                ORDER BY sh.id DESC LIMIT 1) AS category
       FROM movements m JOIN scrapers s ON s.id = m.scraper_id
-      WHERE m.kind = 'removed' AND s.kind = 'competitor' AND m.detected_at > now() - interval '1 day' * ${days}${sf}
+      WHERE m.kind = 'removed' AND s.kind = 'competitor' AND m.detected_at > now() - interval '1 day' * ${days} AND ${NOT_EXCLUDED_MOV}${sf}
       GROUP BY m.item_name
       ORDER BY sold DESC, item_name
       LIMIT 50
@@ -286,7 +301,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
       grouped AS (
         SELECT coalesce(sh.item_name, '(unnamed)') AS item_name,
                mode() WITHIN GROUP (ORDER BY sh.category_name) FILTER (WHERE sh.category_name <> '') AS category,
-               array_remove(array_agg(DISTINCT nullif(btrim(sh.thickness), '')), NULL) AS thicknesses,
+               array_remove(array_agg(DISTINCT ${THICKNESS_RAW}), NULL) AS thicknesses,
                count(*)::int AS slabs,
                count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
@@ -294,7 +309,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
                (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
-        WHERE 1 = 1${q}${lf}
+        WHERE ${NOT_EXCLUDED_SH}${q}${lf}
         GROUP BY sh.item_name
       )
       SELECT * FROM grouped ORDER BY slabs DESC, item_name
@@ -302,9 +317,9 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
     db.execute(sql`
       WITH latest AS (${latestCte(opts.source)}),
       base AS (
-        SELECT sh.category_name, sh.location, sh.thickness
+        SELECT sh.category_name, sh.location, ${THICKNESS_RAW} AS thickness
         FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
-        WHERE 1 = 1${q}${lf}
+        WHERE ${NOT_EXCLUDED_SH}${q}${lf}
       )
       SELECT axis, key, n FROM (
         SELECT 'types' AS axis, nullif(btrim(category_name), '') AS key, count(*)::int AS n FROM base GROUP BY 2
@@ -458,7 +473,7 @@ export async function getMobileMovements(opts: { kind?: string | null; page: num
       WITH g AS (
         SELECT m.detected_at::date AS d, m.kind, coalesce(m.item_name, '(unnamed)') AS item_name, m.scraper_id,
                count(*)::int AS n, min(m.id) AS sample_id
-        FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS}${kf}
+        FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}${kf}
         GROUP BY 1, 2, 3, 4
       ),
       pg AS (
@@ -477,7 +492,7 @@ export async function getMobileMovements(opts: { kind?: string | null; page: num
       ) loc ON true
       ORDER BY pg.d DESC, pg.n DESC, pg.item_name
     `),
-    db.execute(sql`SELECT max(detected_at) AS as_of FROM movements WHERE scraper_id IN ${COMPETITOR_IDS}`),
+    db.execute(sql`SELECT max(m.detected_at) AS as_of FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}`),
   ]);
   return {
     asOf: iso(asOf.rows[0]?.as_of), page, pageSize, total: num(rows.rows[0]?.total),

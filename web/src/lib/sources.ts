@@ -27,3 +27,21 @@ export function findSource(slug: string | undefined | null): SourceMeta | null {
   if (!slug || slug === ALL_SOURCES) return null;
   return SOURCES.find(s => s.slug === slug) ?? null;
 }
+
+/**
+ * Categorias que NÃO são material de chapa e ficam fora do módulo Mercado
+ * (overview, inventory, sales, movements e facets). Lista explícita, com a
+ * fonte onde o valor foi observado (snapshot 2026-09-17); nada é inferido.
+ *   encore   : Cleaning Products (kit de limpeza "Encore Stone Care")
+ *   irgstone : Natural Stone Tile, Porcelain Pavers, Chorus Glass, Jeffrey Court,
+ *              Island Stone, AKDO (tiles/pavers e marcas de revestimento)
+ *   nsr      : Pebbles, Riverstone, Wood (paisagismo)
+ *   tsi      : Cobblestone (pavers)
+ * Comparação exata (case-sensitive) com slabs_history.category_name.
+ */
+export const EXCLUDED_CATEGORIES: readonly string[] = [
+  'Cleaning Products',
+  'Natural Stone Tile', 'Porcelain Pavers', 'Chorus Glass', 'Jeffrey Court', 'Island Stone', 'AKDO',
+  'Pebbles', 'Riverstone', 'Wood',
+  'Cobblestone',
+];
