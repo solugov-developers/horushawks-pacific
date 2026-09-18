@@ -26,13 +26,12 @@ ALTER TABLE movements ADD COLUMN IF NOT EXISTS category_name text;
 
 -- backfill (idempotente: só linhas ainda NULL)
 UPDATE movements m
-SET category_name = x.category_name
-FROM LATERAL (
+SET category_name = (
   SELECT sh.category_name FROM slabs_history sh
   WHERE sh.scraper_id = m.scraper_id AND sh.source_key = m.source_key
     AND sh.job_id IN (m.job_id, m.prev_job_id)
   ORDER BY (sh.job_id = m.job_id) DESC LIMIT 1
-) x
+)
 WHERE m.category_name IS NULL;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mov_kind_detected_cov
