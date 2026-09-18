@@ -84,18 +84,17 @@ export interface Overview {
 export async function getMobileOverview(): Promise<Overview> {
   const [counts, sources, moves, weekAgo] = await Promise.all([
     db.execute(sql`
-      WITH latest AS (${latestCte()})
       SELECT count(*)::int AS slabs,
              count(DISTINCT sh.location)::int AS locations,
              count(DISTINCT sh.category_name) FILTER (WHERE sh.category_name <> '')::int AS categories,
              count(*) FILTER (WHERE sh.on_hold)::int AS on_hold
-      FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
-      WHERE ${NOT_EXCLUDED_SH}
+      FROM inventory_latest sh JOIN scrapers s ON s.id = sh.scraper_id
+      WHERE s.enabled = true AND s.kind = 'competitor' AND ${NOT_EXCLUDED_SH}
     `),
     db.execute(sql`
       WITH latest AS (${latestCte()})
       SELECT s.name, l.job_id, j.finished_at,
-             (SELECT count(*)::int FROM slabs_history sh WHERE sh.scraper_id = l.scraper_id AND sh.job_id = l.job_id AND ${NOT_EXCLUDED_SH}) AS slabs
+             (SELECT count(*)::int FROM inventory_latest sh WHERE sh.scraper_id = s.id AND ${NOT_EXCLUDED_SH}) AS slabs
       FROM scrapers s
       LEFT JOIN latest l ON l.scraper_id = s.id
       LEFT JOIN jobs j ON j.id = l.job_id
@@ -303,7 +302,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
                array_agg(DISTINCT sh.location ORDER BY sh.location) FILTER (WHERE sh.location IS NOT NULL) AS locations,
                (array_agg(a.thumb_key) FILTER (WHERE a.thumb_key IS NOT NULL))[1] AS thumb_key
-        FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+        FROM inventory_latest sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         LEFT JOIN image_assets a ON a.source_url = sh.image_url AND a.status = 'done'
         WHERE ${NOT_EXCLUDED_SH}${q}${lf}
         GROUP BY sh.item_name
@@ -314,7 +313,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
       WITH latest AS (${latestCte(opts.source)}),
       base AS (
         SELECT sh.category_name, sh.location, ${THICKNESS_RAW} AS thickness
-        FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
+        FROM inventory_latest sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         WHERE ${NOT_EXCLUDED_SH}${q}${lf}
       )
       SELECT axis, key, n FROM (
@@ -467,10 +466,8 @@ export async function getMobileMovements(opts: { kind?: string | null; page: num
   const [rows, asOf] = await Promise.all([
     db.execute(sql`
       WITH g AS (
-        SELECT m.detected_at::date AS d, m.kind, coalesce(m.item_name, '(unnamed)') AS item_name, m.scraper_id,
-               count(*)::int AS n, min(m.id) AS sample_id
-        FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}${kf}
-        GROUP BY 1, 2, 3, 4
+        SELECT m.d, m.kind, m.item_name, m.scraper_id, m.n, m.sample_id
+        FROM movements_daily m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}${kf}
       ),
       pg AS (
         SELECT *, count(*) OVER ()::int AS total FROM g

@@ -229,6 +229,19 @@ async function persistSaveRows(client, action, state, ctx) {
   return { inserted, snapshots };
 }
 
+/** REFRESH CONCURRENTLY de movements_daily e inventory_latest (db/029). */
+async function refreshMarketViews(jobId) {
+  for (const view of ['movements_daily', 'inventory_latest']) {
+    const t0 = Date.now();
+    try {
+      await db.query(`REFRESH MATERIALIZED VIEW CONCURRENTLY ${view}`);
+      console.log(`[worker] job ${jobId}: refresh ${view} em ${Date.now() - t0} ms`);
+    } catch (err) {
+      console.error(`[worker] job ${jobId}: refresh ${view} falhou: ${err.message}`);
+    }
+  }
+}
+
 async function computeMovements(client, ctx) {
   const { rows: prevRows } = await client.query(
     `SELECT id FROM jobs
@@ -461,6 +474,10 @@ async function processJob(job) {
     }
 
     console.log(`[worker] job ${jobId} concluído (rows=${totals.inserted}, mov=${movements.added}+${movements.removed}+${movements.changed})`);
+
+    // Pré-agregados do módulo Mercado (db/029). Fora da transação e best-effort:
+    // se falhar, o job continua 'done' e o app lê a versão anterior.
+    await refreshMarketViews(jobId);
 
     // Webhooks
     fireWebhooks(scraperId, 'job.done', {
