@@ -23,7 +23,7 @@ import { cached } from '@/lib/mobile/cache';
  * chave exata sempre vence quando existe.
  */
 
-const IMG_BASE = process.env.APP_PUBLIC_URL ?? 'https://app.horushawks.com';
+import { thumbUrl } from '@/lib/images';
 
 export const nameKey = (s: string | null | undefined): string =>
   (s ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -51,11 +51,6 @@ export function thumbFor(idx: ThumbIndex, product: string): string | null {
   return idx.exact[nameKey(product)] ?? idx.loose[looseKey(product)] ?? idx.stone[stoneKey(product)] ?? null;
 }
 
-function thumbUrl(thumbKey: unknown): string | null {
-  if (typeof thumbKey !== 'string') return null;
-  const m = /thumbs\/([0-9a-f]+)\.jpg$/.exec(thumbKey);
-  return m ? `${IMG_BASE}/api/mobile/v1/thumb/${m[1]}` : null;
-}
 
 async function loadThumbMap(): Promise<ThumbIndex> {
   const r = await db.execute(sql`

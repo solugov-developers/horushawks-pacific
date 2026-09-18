@@ -85,6 +85,7 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       APP_PUBLIC_URL: ${APP_PUBLIC_URL:-https://app.horushawks.com}
+      IMG_CDN_BASE: ${IMG_CDN_BASE:-}
     depends_on:
       postgres:
         condition: service_healthy
