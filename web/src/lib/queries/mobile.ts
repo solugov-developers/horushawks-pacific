@@ -207,10 +207,18 @@ export async function getMobileSales(period: number, source?: string | null): Pr
 /* Imagem: thumb_key (S3, via image_assets) -> URL do proxy /thumb     */
 /* ------------------------------------------------------------------ */
 const IMG_BASE = process.env.APP_PUBLIC_URL ?? 'https://app.horushawks.com';
+/**
+ * IMG_CDN_BASE (ex.: https://d123.cloudfront.net): CloudFront com OAC na frente
+ * do bucket, prefixo thumbs/. Com a variável, o app recebe a URL da CDN e as
+ * imagens não passam pelo Lightsail; sem ela, o proxy /thumb/<sha1> continua
+ * servindo (fallback). Sem barra final.
+ */
+const IMG_CDN_BASE = (process.env.IMG_CDN_BASE ?? '').replace(/\/+$/, '');
 function thumbUrl(thumbKey: unknown): string | null {
   if (typeof thumbKey !== 'string') return null;
   const m = /thumbs\/([0-9a-f]+)\.jpg$/.exec(thumbKey);
-  return m ? `${IMG_BASE}/api/mobile/v1/thumb/${m[1]}` : null;
+  if (!m) return null;
+  return IMG_CDN_BASE ? `${IMG_CDN_BASE}/thumbs/${m[1]}.jpg` : `${IMG_BASE}/api/mobile/v1/thumb/${m[1]}`;
 }
 
 /* ------------------------------------------------------------------ */
