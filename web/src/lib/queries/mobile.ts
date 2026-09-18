@@ -458,32 +458,38 @@ export interface MovementFeed { asOf: string | null; page: number; pageSize: num
 export async function getMobileMovements(opts: { kind?: string | null; page: number; pageSize: number }): Promise<MovementFeed> {
   const { page, pageSize } = opts;
   const kf = opts.kind && opts.kind !== 'all' ? sql` AND m.kind = ${opts.kind}` : sql``;
-  const [rows, asOf] = await Promise.all([
+  // Página lida pelo índice já ordenado de movements_daily (d DESC, n DESC, item_name);
+  // total em consulta separada (count(*) OVER () obrigava a materializar os 70 k grupos).
+  // asOf = instante da última coleta concluída dos concorrentes.
+  const [rows, total, asOf] = await Promise.all([
     db.execute(sql`
-      WITH g AS (
-        SELECT m.d, m.kind, m.item_name, m.scraper_id, m.n, m.sample_id
-        FROM movements_daily m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}${kf}
-      ),
-      pg AS (
-        SELECT *, count(*) OVER ()::int AS total FROM g
-        ORDER BY d DESC, n DESC, item_name
-        LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
-      )
-      SELECT pg.*, s.name, m.prev_value, m.next_value, loc.location, loc.category_name
-      FROM pg JOIN scrapers s ON s.id = pg.scraper_id
-      JOIN movements m ON m.id = pg.sample_id
+      SELECT m.d, m.kind, m.item_name, m.scraper_id, m.n, m.sample_id,
+             s.name, mv.prev_value, mv.next_value, loc.location, loc.category_name
+      FROM movements_daily m
+      JOIN scrapers s ON s.id = m.scraper_id AND s.kind = 'competitor'
+      JOIN movements mv ON mv.id = m.sample_id
       LEFT JOIN LATERAL (
         SELECT sh.location, sh.category_name FROM slabs_history sh
-        WHERE sh.scraper_id = m.scraper_id AND sh.source_key = m.source_key
-          AND sh.job_id IN (m.job_id, m.prev_job_id)
+        WHERE sh.scraper_id = mv.scraper_id AND sh.source_key = mv.source_key
+          AND sh.job_id IN (mv.job_id, mv.prev_job_id)
         ORDER BY sh.job_id DESC LIMIT 1
       ) loc ON true
-      ORDER BY pg.d DESC, pg.n DESC, pg.item_name
+      WHERE ${NOT_EXCLUDED_MOV}${kf}
+      ORDER BY m.d DESC, m.n DESC, m.item_name
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
     `),
-    db.execute(sql`SELECT max(m.detected_at) AS as_of FROM movements m WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}`),
+    db.execute(sql`
+      SELECT count(*)::int AS total FROM movements_daily m
+      WHERE m.scraper_id IN ${COMPETITOR_IDS} AND ${NOT_EXCLUDED_MOV}${kf}
+    `),
+    // asOf = fim da última coleta concluída dos concorrentes (jobs é pequena; max em movements custava 0,6 s)
+    db.execute(sql`
+      SELECT max(j.finished_at) AS as_of FROM jobs j JOIN scrapers s ON s.id = j.scraper_id
+      WHERE j.status = 'done' AND s.enabled = true AND s.kind = 'competitor'
+    `),
   ]);
   return {
-    asOf: iso(asOf.rows[0]?.as_of), page, pageSize, total: num(rows.rows[0]?.total),
+    asOf: iso(asOf.rows[0]?.as_of), page, pageSize, total: num(total.rows[0]?.total),
     rows: rows.rows.map(r => ({
       id: num(r.sample_id), date: day(r.d), kind: String(r.kind), itemName: String(r.item_name),
       category: (r.category_name as string | null) || null, count: num(r.n),
