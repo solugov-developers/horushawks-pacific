@@ -14,7 +14,7 @@ function listParam(v: string | null): string[] | null {
 }
 
 /**
- * GET /erp/inventory?q=&type=&thickness=&region=&location=&status=&sort=&page=&pageSize=
+ * GET /erp/inventory?q=&type=&thickness=&region=&location=&velocity=&age=&status=&sort=&page=&pageSize=
  * Estoque · Pacific (contrato v2 + filtros v2.1). type = erp.stock.category
  * (Quartzite, Marble…); thickness normalizada ("2 cm"); region via erp.locations.
  */
@@ -30,6 +30,8 @@ export const GET = withToken(async (req) => {
     region: listParam(sp.get('region')),
     type: listParam(sp.get('type')),
     thickness: listParam(sp.get('thickness')),
+    velocity: listParam(sp.get('velocity')),
+    age: listParam(sp.get('age')),
     status: (status as InventoryStatus | null) ?? null,
     sort: (sort as InventorySort | null) ?? null,
     page: intParam(sp.get('page'), 1, 1, 10_000),

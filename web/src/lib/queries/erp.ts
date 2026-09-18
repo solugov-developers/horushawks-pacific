@@ -701,28 +701,49 @@ export function thicknessOf(product: string): string | null {
   return m ? `${m[1]} ${m[2].toLowerCase()}` : null;
 }
 
+export type Velocity = 'fast' | 'normal' | 'slow' | 'dead';
+export interface Aging { d0_90: number; d91_180: number; d181_365: number; d365plus: number }
+export const AGE_BUCKETS = ['d0_90', 'd91_180', 'd181_365', 'd365plus'] as const;
+export const VELOCITIES = ['fast', 'normal', 'slow', 'dead'] as const;
 export interface ErpInventoryRow {
   product: string; category: string | null; type: string | null; thickness: string | null;
   slabs: number; available: number; onHold: number; onSo: number; inTransit: number;
   assetValue: number; avgSizeIn: [number, number] | null; locations: string[]; imageUrl: string | null;
+  /** v2.2: idade (chapas em estoque por faixa desde received_date) e velocidade */
+  aging: Aging; oldestReceivedAt: string | null; sold90d: number; daysOfStock: number | null; velocity: Velocity;
+}
+
+/**
+ * Velocidade (contrato v2.2): daysOfStock = available / (sold90d / 90), null sem
+ * venda em 90 d. fast <= 60 · normal · slow > 365 (ou sem venda em 90 d) ·
+ * dead = sem venda em 365 d E chapa mais antiga com > 365 d.
+ */
+export function velocityOf(available: number, sold90d: number, sold365d: number, oldestAgeDays: number | null): { daysOfStock: number | null; velocity: Velocity } {
+  const daysOfStock = sold90d > 0 ? Math.round(available / (sold90d / 90)) : null;
+  if (sold365d === 0 && oldestAgeDays != null && oldestAgeDays > 365) return { daysOfStock, velocity: 'dead' };
+  if (daysOfStock == null) return { daysOfStock, velocity: 'slow' };
+  return { daysOfStock, velocity: daysOfStock <= 60 ? 'fast' : daysOfStock > 365 ? 'slow' : 'normal' };
 }
 export interface Facet { key: string; label: string; count: number }
-export interface Facets { types: Facet[]; thicknesses: Facet[]; regions: Facet[]; locations: Facet[] }
+export interface Facets { types: Facet[]; thicknesses: Facet[]; regions: Facet[]; locations: Facet[]; velocity?: Facet[]; age?: Facet[] }
 export interface ErpInventory {
   asOf: string; stale: boolean;
   totalSlabs: number; totalValue: number; totalMaterials: number;
   page: number; pageSize: number;
   locations: { code: string; label: string }[];
   facets: Facets;
+  /** v2.2: chapas mortas/lentas e idade média das chapas em estoque (sobre a base de q/region/location) */
+  summary: { deadSlabs: number; deadValue: number; slowSlabs: number; slowValue: number; avgAgeDays: number | null };
   rows: ErpInventoryRow[];
 }
 export const INVENTORY_STATUS = ['available', 'hold', 'transit', 'photo'] as const;
-export const INVENTORY_SORT = ['slabs', 'value', 'name'] as const;
+export const INVENTORY_SORT = ['slabs', 'value', 'name', 'age', 'velocity'] as const;
 export type InventoryStatus = typeof INVENTORY_STATUS[number];
 export type InventorySort = typeof INVENTORY_SORT[number];
 export interface ErpInventoryOpts {
   q?: string | null; location?: string[] | null; region?: string[] | null;
   type?: string[] | null; thickness?: string[] | null;
+  velocity?: string[] | null; age?: string[] | null;
   status?: InventoryStatus | null; sort?: InventorySort | null;
   page: number; pageSize: number;
 }
@@ -765,6 +786,14 @@ po AS (
   SELECT product, coalesce(sum(slabs), 0) AS in_transit FROM erp.in_transit
   WHERE ${NOT_RECEIVED} GROUP BY product
 ),
+sold AS (
+  SELECT item AS product,
+         coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 90), 0)  AS sold90,
+         coalesce(sum(slabs), 0)                                               AS sold365
+  FROM erp.sales_lines
+  WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date AND sale_date > snapshot_date - 365
+  GROUP BY item
+),
 g AS (
   SELECT b.product,
          mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
@@ -777,10 +806,18 @@ g AS (
          coalesce(max(po.in_transit), 0)                 AS in_transit,
          coalesce(sum(asset_value), 0)                   AS asset_value,
          ${INVENTORY_SLABS_EXPR}                         AS inv_slabs,
+         count(*) FILTER (WHERE status = 'in_stock' AND received_date >  current_date - 90)                              AS age0,
+         count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 90  AND received_date > current_date - 180) AS age1,
+         count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 180 AND received_date > current_date - 365) AS age2,
+         count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 365)                              AS age3,
+         min(received_date) FILTER (WHERE status = 'in_stock')                                                             AS oldest,
+         coalesce(sum(current_date - received_date) FILTER (WHERE status = 'in_stock'), 0)                                AS age_sum,
+         coalesce(max(sold.sold90), 0)                   AS sold90,
+         coalesce(max(sold.sold365), 0)                  AS sold365,
          round(avg(length_in))                           AS avg_len,
          round(avg(width_in))                            AS avg_wid,
          array_remove(array_agg(DISTINCT nullif(btrim(location), '') ORDER BY nullif(btrim(location), '')), NULL) AS locations
-  FROM base b LEFT JOIN po ON po.product = b.product
+  FROM base b LEFT JOIN po ON po.product = b.product LEFT JOIN sold ON sold.product = b.product
   WHERE coalesce(btrim(b.product), '') <> ''
   GROUP BY b.product
 )
@@ -821,9 +858,10 @@ export function buildFacets(rows: { axis: unknown; key: unknown; n: unknown }[],
   const out: Facets = { types: [], thicknesses: [], regions: [], locations: [] };
   for (const r of rows) {
     const axis = String(r.axis) as keyof Facets;
-    if (!(axis in out) || out[axis].length >= FACET_MAX) continue;
+    const list = out[axis];
+    if (!list || list.length >= FACET_MAX) continue;
     const key = String(r.key);
-    out[axis].push({ key, label: label(axis, key), count: int(r.n) });
+    list.push({ key, label: label(axis, key), count: int(r.n) });
   }
   return out;
 }
@@ -842,27 +880,52 @@ export async function getErpInventory(opts: ErpInventoryOpts): Promise<ErpInvent
   ]);
   const snapshot = grouped[0]?.snapshot ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.stock'))[0]?.s;
 
+  const today = new Date(dayOf(snapshot) ?? new Date().toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
   let all = grouped.map(r => {
     const product = String(r.product);
+    const available = int(r.available);
+    const oldest = dayOf(r.oldest);
+    const oldestAge = oldest ? Math.round((today - new Date(oldest + 'T00:00:00Z').getTime()) / 86_400_000) : null;
+    const { daysOfStock, velocity } = velocityOf(available, int(r.sold90), int(r.sold365), oldestAge);
     return {
       row: {
         product,
         category: (r.category as string | null) ?? null,
         type: (r.type as string | null) ?? null,
         thickness: (r.thickness as string | null) ?? thicknessOf(product),
-        slabs: int(r.slabs), available: int(r.available), onHold: int(r.on_hold), onSo: int(r.on_so), inTransit: int(r.in_transit),
+        slabs: int(r.slabs), available, onHold: int(r.on_hold), onSo: int(r.on_so), inTransit: int(r.in_transit),
         assetValue: usd(r.asset_value),
         avgSizeIn: (r.avg_len != null && r.avg_wid != null ? [int(r.avg_len), int(r.avg_wid)] : null) as [number, number] | null,
         locations: (r.locations as string[]) ?? [],
         imageUrl: thumbFor(thumbs, product),
+        aging: { d0_90: int(r.age0), d91_180: int(r.age1), d181_365: int(r.age2), d365plus: int(r.age3) },
+        oldestReceivedAt: oldest, sold90d: int(r.sold90), daysOfStock, velocity,
       } satisfies ErpInventoryRow,
       invSlabs: int(r.inv_slabs),
+      ageSum: num(r.age_sum),
     };
   });
+  // facets de velocidade/idade e summary: sobre a base (q/region/location), antes dos demais filtros
+  const velCount: Record<string, number> = {}; const ageCount: Record<string, number> = {};
+  let deadSlabs = 0, deadValue = 0, slowSlabs = 0, slowValue = 0, ageSum = 0, ageN = 0;
+  for (const x of all) {
+    velCount[x.row.velocity] = (velCount[x.row.velocity] ?? 0) + x.row.slabs;
+    for (const b of AGE_BUCKETS) ageCount[b] = (ageCount[b] ?? 0) + x.row.aging[b];
+    if (x.row.velocity === 'dead') { deadSlabs += x.row.slabs; deadValue += x.row.assetValue; }
+    if (x.row.velocity === 'slow') { slowSlabs += x.row.slabs; slowValue += x.row.assetValue; }
+    ageSum += x.ageSum; ageN += x.row.available;
+  }
+  const summary = { deadSlabs, deadValue, slowSlabs, slowValue, avgAgeDays: ageN > 0 ? Math.round(ageSum / ageN) : null };
+  const velFacet = VELOCITIES.filter(v => velCount[v]).map(v => ({ key: v, label: v, count: velCount[v] }));
+  const ageFacet = AGE_BUCKETS.filter(b => ageCount[b]).map(b => ({ key: b, label: b, count: ageCount[b] }));
   const types = listOrNull(opts.type?.map(nameKey));
   const thick = listOrNull(opts.thickness?.map(nameKey));
   if (types) all = all.filter(x => x.row.category && types.includes(nameKey(x.row.category)));
   if (thick) all = all.filter(x => x.row.thickness && thick.includes(nameKey(x.row.thickness)));
+  const vel = listOrNull(opts.velocity?.map(v => v.trim().toLowerCase()));
+  const age = listOrNull(opts.age?.map(v => v.trim().toLowerCase()));
+  if (vel) all = all.filter(x => vel.includes(x.row.velocity));
+  if (age) all = all.filter(x => age.some(b => (x.row.aging as unknown as Record<string, number>)[b] > 0));
   switch (opts.status) {
     case 'available': all = all.filter(x => x.row.available > 0); break;
     case 'hold':      all = all.filter(x => x.row.onHold > 0); break;
@@ -870,9 +933,14 @@ export async function getErpInventory(opts: ErpInventoryOpts): Promise<ErpInvent
     case 'photo':     all = all.filter(x => x.row.imageUrl != null); break;
   }
   const byName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' });
+  const velRank: Record<Velocity, number> = { dead: 0, slow: 1, normal: 2, fast: 3 };
   switch (opts.sort ?? 'slabs') {
     case 'value': all.sort((a, b) => b.row.assetValue - a.row.assetValue || byName(a.row.product, b.row.product)); break;
     case 'name':  all.sort((a, b) => byName(a.row.product, b.row.product)); break;
+    // mais velho primeiro (sem data no fim)
+    case 'age':   all.sort((a, b) => (a.row.oldestReceivedAt ?? '9999').localeCompare(b.row.oldestReceivedAt ?? '9999') || byName(a.row.product, b.row.product)); break;
+    // mortas -> lentas -> normais -> rápidas; dentro da faixa, mais dias de estoque primeiro
+    case 'velocity': all.sort((a, b) => velRank[a.row.velocity] - velRank[b.row.velocity] || (b.row.daysOfStock ?? 1e9) - (a.row.daysOfStock ?? 1e9) || byName(a.row.product, b.row.product)); break;
     default:      all.sort((a, b) => b.row.slabs - a.row.slabs || byName(a.row.product, b.row.product));
   }
 
@@ -884,7 +952,8 @@ export async function getErpInventory(opts: ErpInventoryOpts): Promise<ErpInvent
     totalMaterials: all.length,
     page, pageSize,
     locations: locs.map(l => ({ code: l.code, label: labelOf(labels, l.code) })),
-    facets: buildFacets(facetRows, (axis, key) => (axis === 'locations' ? labelOf(labels, key) : key)),
+    facets: { ...buildFacets(facetRows, (axis, key) => (axis === 'locations' ? labelOf(labels, key) : key)), velocity: velFacet, age: ageFacet },
+    summary,
     rows: all.slice((page - 1) * pageSize, page * pageSize).map(x => x.row),
   };
 }
@@ -900,6 +969,8 @@ export interface ErpMaterial {
   slabs: number; available: number; onHold: number; onSo: number; inTransit: number;
   assetValue: number; availableSf: number; avgSizeIn: [number, number] | null;
   avgCostSf: number | null; avgPriceSf: number | null; sold30d: number; sold30dValue: number;
+  /** v2.2 */
+  aging: Aging; oldestReceivedAt: string | null; sold90d: number; daysOfStock: number | null; velocity: Velocity;
   byLocation: { code: string; label: string; slabs: number; available: number }[];
   lots: ErpLot[];
   incoming: { po: string; supplier: string | null; eta: string | null; slabs: number; status: string | null }[];
@@ -924,7 +995,12 @@ SELECT max(snapshot_date) AS snapshot,
        coalesce(sum(asset_value), 0) AS asset_value,
        coalesce(sum(available_qty) FILTER (WHERE status = 'in_stock' AND coalesce(units, '') ~* '^sf$'), 0) AS available_sf,
        round(avg(length_in)) AS avg_len, round(avg(width_in)) AS avg_wid,
-       avg(unit_landed_cost) FILTER (WHERE unit_landed_cost > 0) AS avg_cost_sf
+       avg(unit_landed_cost) FILTER (WHERE unit_landed_cost > 0) AS avg_cost_sf,
+       count(*) FILTER (WHERE status = 'in_stock' AND received_date >  current_date - 90)                              AS age0,
+       count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 90  AND received_date > current_date - 180) AS age1,
+       count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 180 AND received_date > current_date - 365) AS age2,
+       count(*) FILTER (WHERE status = 'in_stock' AND received_date <= current_date - 365)                              AS age3,
+       min(received_date) FILTER (WHERE status = 'in_stock') AS oldest
 FROM erp.stock WHERE product = $1`;
 
 const MATERIAL_BY_LOCATION_SQL = `
@@ -958,6 +1034,8 @@ GROUP BY po::text ORDER BY min(eta) ASC NULLS LAST, po::text LIMIT 20`;
 /** Vendas do produto: 30 d para sold30d; 90 d para preço médio por SF (sale_total / qty em SF). */
 const MATERIAL_SALES_SQL = `
 SELECT coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 30), 0)      AS sold30d,
+       coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 90), 0)      AS sold90d,
+       coalesce(sum(slabs) FILTER (WHERE sale_date > snapshot_date - 365), 0)     AS sold365d,
        coalesce(sum(sale_total) FILTER (WHERE sale_date > snapshot_date - 30), 0) AS sold30d_value,
        sum(sale_total) FILTER (WHERE sale_date > snapshot_date - 90 AND coalesce(uom, '') ~* '^sf$' AND qty > 0) AS sf_total,
        sum(qty)        FILTER (WHERE sale_date > snapshot_date - 90 AND coalesce(uom, '') ~* '^sf$' AND qty > 0) AS sf_qty
@@ -1017,6 +1095,10 @@ export async function getErpMaterial(productInput: string): Promise<ErpMaterial 
     avgCostSf: s.avg_cost_sf != null ? Number(num(s.avg_cost_sf).toFixed(1)) : null,
     avgPriceSf: num(v.sf_qty) > 0 ? Number((num(v.sf_total) / num(v.sf_qty)).toFixed(1)) : null,
     sold30d: int(v.sold30d), sold30dValue: usd(v.sold30d_value),
+    aging: { d0_90: int(s.age0), d91_180: int(s.age1), d181_365: int(s.age2), d365plus: int(s.age3) },
+    oldestReceivedAt: dayOf(s.oldest), sold90d: int(v.sold90d),
+    ...velocityOf(int(s.available), int(v.sold90d), int(v.sold365d),
+      dayOf(s.oldest) ? Math.round((new Date((dayOf(s.snapshot) ?? '') + 'T00:00:00Z').getTime() - new Date(dayOf(s.oldest) + 'T00:00:00Z').getTime()) / 86_400_000) : null),
     byLocation: byLoc.map(r => ({ code: String(r.code), label: labelOf(labels, String(r.code)), slabs: int(r.slabs), available: int(r.available) })),
     lots: lots.map(r => ({
       serial: (r.serial as string | null) ?? null,
