@@ -18,13 +18,14 @@ const STALE_HOURS = 36;
 /** Módulo Mercado = só concorrentes. A fonte própria (pacshore, kind = 'own') fica de fora. */
 const COMPETITOR_IDS = sql`(SELECT id FROM scrapers WHERE kind = 'competitor')`;
 /** Fora do Mercado: categorias que não são chapa (lib/sources.ts). `sh` = alias de slabs_history. */
-const EXCL = [...EXCLUDED_CATEGORIES];
-const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}::text[]))`;
+// drizzle expande um array JS como (a, b, c) — um record —, não como text[]; por isso ARRAY[...] explícito.
+const EXCL = sql`ARRAY[${sql.join(EXCLUDED_CATEGORIES.map(c => sql`${c}`), sql`, `)}]::text[]`;
+const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}))`;
 /** Mesmo filtro para movements (alias m): olha a categoria da linha de slabs_history do próprio movimento. */
 const NOT_EXCLUDED_MOV = sql`NOT EXISTS (
   SELECT 1 FROM slabs_history x
   WHERE x.scraper_id = m.scraper_id AND x.source_key = m.source_key
-    AND x.job_id IN (m.job_id, m.prev_job_id) AND x.category_name = ANY(${EXCL}::text[]))`;
+    AND x.job_id IN (m.job_id, m.prev_job_id) AND x.category_name = ANY(${EXCL}))`;
 /**
  * Espessura: coluna thickness da fonte; se vazia (ex.: Encore), o prefixo do
  * nome do item ("3cm Cristallo", "12mm …"). \y = limite de palavra no Postgres.
