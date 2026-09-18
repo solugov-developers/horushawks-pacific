@@ -100,7 +100,8 @@ function resolveSrc(row, srcPath) {
       // filtros com argumento (Shopify e afins):
       //   {{tags|tag:Material_}}      -> valor da 1ª tag com o prefixo, sem o prefixo ("Material_porcelain" -> "porcelain")
       //   {{variants|anytrue:available}} -> "1" se algum item do array tiver o campo verdadeiro; senão vazio (NULL)
-      const m = /^(.*?)\|(tag|anytrue):(.+)$/.exec(key);
+      //   {{variants|counttrue:available}} -> quantos itens do array têm o campo verdadeiro ("2"); 0 -> vazio (NULL)
+      const m = /^(.*?)\|(tag|anytrue|counttrue):(.+)$/.exec(key);
       if (m) { key = m[1].trim(); filter = { kind: m[2], arg: m[3].trim() }; }
     }
     let v = getPath(row, key);
@@ -110,6 +111,9 @@ function resolveSrc(row, srcPath) {
         v = hit ? hit.slice(filter.arg.length).trim() : null;
       } else if (filter.kind === 'anytrue') {
         v = v.some((it) => it && it[filter.arg] === true) ? '1' : null;
+      } else if (filter.kind === 'counttrue') {
+        const n = v.filter((it) => it && it[filter.arg] === true).length;
+        v = n > 0 ? String(n) : null;
       }
     } else if (filter) {
       v = null;

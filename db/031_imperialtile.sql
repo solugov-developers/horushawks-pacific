@@ -4,13 +4,15 @@
 -- CA) — loja Shopify com JSON público:
 --   https://shopimperialtile.com/collections/luxury-premium-slabs/products.json?limit=250&page=N
 --   56 produtos numa página; pagina até vir vazio (paginate_until + accumulate).
--- 1 linha = 1 PRODUTO de catálogo (não uma chapa): lib/sources.ts unit='products'.
--- Mapeamento (filtros novos do worker {{campo|tag:Prefixo_}} e {{arr|anytrue:campo}}):
+-- Conta como CHAPAS (decisão do usuário 2026-09-18): o JSON público não traz
+-- inventory_quantity; cada VARIANTE disponível é uma chapa (18 produtos têm
+-- "Slab A"/"Slab B"): available_slabs = variantes com available=true.
+-- Mapeamento (filtros do worker {{campo|tag:Prefixo_}} e {{arr|counttrue:campo}}):
 --   item_name=title · category_name=tag Material_ (fallback product_type) ·
 --   color=tag Color_ · finish=tag Finish_ · price=variants[0].price ·
---   serial_number=variants[0].sku · available_slabs/available_qty=1 se alguma
---   variante disponível · image_url=images[0].src · source_key=id ·
---   location='California' (site: "California 91605") · uom='PRODUCTS'.
+--   serial_number=variants[0].sku · available_slabs/available_qty=nº de
+--   variantes disponíveis · image_url=images[0].src · source_key=id ·
+--   location='California' (site: "California 91605") · uom='SLABS'.
 -- Dimensões (tag Size_, ex. 61x126) ficam no payload de slabs_history (tags).
 -- ============================================================================
 
@@ -43,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_imperialtile_slabs_item ON imperialtile_slabs (it
 
 INSERT INTO scrapers (name, description, url, actions, vars, schedule, enabled, kind) VALUES (
   'imperialtile',
-  'Imperial Tile (North Hollywood, CA) - Shopify products.json (1 linha = 1 produto)',
+  'Imperial Tile (North Hollywood, CA) - Shopify products.json (chapas = variantes disponíveis)',
   'https://shopimperialtile.com/collections/luxury-premium-slabs/products.json',
   $JSON$[
     {
@@ -75,11 +77,11 @@ INSERT INTO scrapers (name, description, url, actions, vars, schedule, enabled, 
         "finish":          "{{tags|tag:Finish_}}",
         "serial_number":   "variants.0.sku",
         "price":           "variants.0.price",
-        "available_slabs": "{{variants|anytrue:available}}",
-        "available_qty":   "{{variants|anytrue:available}}",
+        "available_slabs": "{{variants|counttrue:available}}",
+        "available_qty":   "{{variants|counttrue:available}}",
         "image_url":       "images.0.src"
       },
-      "constants": { "location": "California", "uom": "PRODUCTS" }
+      "constants": { "location": "California", "uom": "SLABS" }
     }
   ]$JSON$::jsonb,
   '{}'::jsonb,
