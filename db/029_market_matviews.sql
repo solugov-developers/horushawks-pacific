@@ -35,7 +35,11 @@ WITH latest AS (
   GROUP BY j.scraper_id
 )
 SELECT sh.id, sh.scraper_id, sh.job_id, sh.source_key, sh.item_name, sh.category_name,
-       sh.location, sh.on_hold, sh.thickness, sh.image_url
+       sh.location, sh.on_hold, sh.thickness, sh.image_url,
+       -- espessura crua já resolvida no refresh: coluna da fonte ou prefixo do nome
+       -- ("3cm Cristallo", "12mm …"); o BFF normaliza ("N cm") em TS.
+       coalesce(nullif(btrim(sh.thickness), ''),
+                (SELECT m[1] || m[2] FROM (SELECT regexp_match(sh.item_name, '\y(\d+(?:\.\d+)?)\s*(cm|mm)\y', 'i') AS m) t)) AS thickness_raw
 FROM slabs_history sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
 WITH DATA;
 CREATE UNIQUE INDEX idx_invlatest_id ON inventory_latest (id);

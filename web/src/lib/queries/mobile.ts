@@ -23,12 +23,7 @@ const EXCL = sql`ARRAY[${sql.join(EXCLUDED_CATEGORIES.map(c => sql`${c}`), sql`,
 const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}))`;
 /** Mesmo filtro para movements (alias m): movements.category_name é preenchida pelo worker (db/028), sem subconsulta. */
 const NOT_EXCLUDED_MOV = sql`NOT (coalesce(m.category_name, '') = ANY(${EXCL}))`;
-/**
- * Espessura: coluna thickness da fonte; se vazia (ex.: Encore), o prefixo do
- * nome do item ("3cm Cristallo", "12mm …"). \y = limite de palavra no Postgres.
- */
-const THICKNESS_RAW = sql`coalesce(nullif(btrim(sh.thickness), ''),
-  (SELECT m[1] || m[2] FROM (SELECT regexp_match(sh.item_name, '\\y(\\d+(?:\\.\\d+)?)\\s*(cm|mm)\\y', 'i') AS m) t))`;
+// Espessura crua (coluna da fonte ou prefixo do nome) é resolvida na matview inventory_latest.thickness_raw (db/029).
 export const MOVEMENT_KINDS = ['added', 'removed', 'held', 'released', 'transferred', 'price_changed', 'qty_changed'] as const;
 export type MovementKind = typeof MOVEMENT_KINDS[number];
 
@@ -296,7 +291,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
       grouped AS (
         SELECT coalesce(sh.item_name, '(unnamed)') AS item_name,
                mode() WITHIN GROUP (ORDER BY sh.category_name) FILTER (WHERE sh.category_name <> '') AS category,
-               array_remove(array_agg(DISTINCT ${THICKNESS_RAW}), NULL) AS thicknesses,
+               array_remove(array_agg(DISTINCT sh.thickness_raw), NULL) AS thicknesses,
                count(*)::int AS slabs,
                count(*) FILTER (WHERE sh.on_hold)::int AS on_hold,
                array_agg(DISTINCT l.name ORDER BY l.name) AS sources,
@@ -312,7 +307,7 @@ export async function getMobileInventory(opts: InventoryOpts): Promise<Inventory
     db.execute(sql`
       WITH latest AS (${latestCte(opts.source)}),
       base AS (
-        SELECT sh.category_name, sh.location, ${THICKNESS_RAW} AS thickness
+        SELECT sh.category_name, sh.location, sh.thickness_raw AS thickness
         FROM inventory_latest sh JOIN latest l ON l.scraper_id = sh.scraper_id AND l.job_id = sh.job_id
         WHERE ${NOT_EXCLUDED_SH}${q}${lf}
       )
