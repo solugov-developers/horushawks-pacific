@@ -94,6 +94,8 @@ export interface ErpToday {
   kpis: {
     openSalesOrders: number; openSalesOrdersValue: number;
     receivableOverdue: number; receivableTotal: number; customerCredits: number;
+    /** contas a pagar que vencem de hoje a +7 dias (erp.ap_aging, saldos positivos) */
+    payableDue7d: number;
     inventoryValue: number; inventorySlabs: number;
     inTransitSlabs: number; inTransitContainers: number;
   };
@@ -171,6 +173,8 @@ SELECT
   (SELECT coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_d90plus,
   (SELECT coalesce(sum("current") FILTER (WHERE balance_due > 0), 0) FROM erp.ar_aging) AS ar_current,
   (SELECT coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) FROM erp.ar_aging) AS ar_credits,
+  (SELECT coalesce(sum(balance_due) FILTER (WHERE balance_due > 0 AND due_date BETWEEN current_date AND current_date + 7), 0)
+     FROM erp.ap_aging)                                                                AS ap_due7d,
   (SELECT coalesce(sum(asset_value), 0) FROM erp.stock)                                AS inv_value,
   (SELECT ${INVENTORY_SLABS_EXPR} FROM erp.stock)                                        AS inv_slabs,
   (SELECT coalesce(sum(slabs), 0) FROM erp.in_transit WHERE ${NOT_RECEIVED})           AS transit_slabs,
@@ -252,6 +256,7 @@ export async function getErpToday(): Promise<ErpToday> {
       receivableOverdue: usd(k.ar_d1_30) + usd(k.ar_d31_60) + usd(k.ar_d61_90) + usd(k.ar_d90plus),
       receivableTotal: usd(k.ar_current) + usd(k.ar_d1_30) + usd(k.ar_d31_60) + usd(k.ar_d61_90) + usd(k.ar_d90plus),
       customerCredits: usd(k.ar_credits),
+      payableDue7d: usd(k.ap_due7d),
       inventoryValue: usd(k.inv_value), inventorySlabs: int(k.inv_slabs),
       inTransitSlabs: int(k.transit_slabs), inTransitContainers: int(k.transit_containers),
     },
@@ -274,6 +279,12 @@ export interface ErpFinance {
     overdue: number; credits: number; net: number; customers: number;
   };
   topOverdue: { customer: string; code: string | null; balance: number; d90plus: number; location: string | null; salesRep: string | null }[];
+  /** Contas a pagar (erp.ap_aging), mesma regra bruta do a receber; due7d = vence de hoje a +7 dias. */
+  payable: {
+    total: number; current: number; d1_30: number; d31_60: number; d61_90: number; d90plus: number;
+    credits: number; overdue: number; due7d: number; suppliers: number;
+  };
+  topPayables: { party: string; code: string | null; kind: string | null; category: string | null; balance: number; dueDate: string | null; overdue: number; location: string | null }[];
   /** null enquanto não existir a view erp.receipts (eod_receipts_deposits). */
   received: { date: string | null; total: number; count: number; mtd: number } | null;
   byLocation: { code: string; label: string; receivable: number; overdue: number; credits: number }[];
@@ -354,6 +365,40 @@ FROM erp.ar_aging
 GROUP BY 1
 ORDER BY receivable DESC`;
 
+/**
+ * Contas a pagar (erp.ap_aging: Aged Payables Detail, subtotais já excluídos na
+ * view). Regra BRUTA igual ao a receber: faixas e total só de linhas com
+ * balance_due > 0; linhas negativas (créditos com fornecedores) em `credits`
+ * positivo; due7d = saldo positivo com due_date entre hoje e hoje + 7.
+ */
+const AP_TOTALS_SQL = `
+SELECT coalesce(sum("current") FILTER (WHERE balance_due > 0), 0)    AS current,
+       coalesce(sum(d1_30)     FILTER (WHERE balance_due > 0), 0)    AS d1_30,
+       coalesce(sum(d31_60)    FILTER (WHERE balance_due > 0), 0)    AS d31_60,
+       coalesce(sum(d61_90)    FILTER (WHERE balance_due > 0), 0)    AS d61_90,
+       coalesce(sum(d90plus)   FILTER (WHERE balance_due > 0), 0)    AS d90plus,
+       coalesce(-sum(balance_due) FILTER (WHERE balance_due <= 0), 0) AS credits,
+       coalesce(sum(balance_due) FILTER (WHERE balance_due > 0
+                 AND due_date BETWEEN current_date AND current_date + 7), 0) AS due7d,
+       count(DISTINCT supplier)                                      AS suppliers   -- todas as partes do relatório (321)
+FROM erp.ap_aging`;
+
+/** Por fornecedor: saldo líquido, vencido (faixas das linhas positivas), próximo vencimento em aberto. */
+const TOP_PAYABLES_SQL = `
+SELECT supplier AS party, max(nullif(btrim(supplier_code), '')) AS code,
+       max(nullif(btrim(party_kind), ''))     AS kind,
+       max(nullif(btrim(party_category), '')) AS category,
+       coalesce(sum(balance_due), 0) AS balance,
+       min(due_date) FILTER (WHERE balance_due > 0) AS due_date,
+       coalesce(sum(coalesce(d1_30,0)+coalesce(d31_60,0)+coalesce(d61_90,0)+coalesce(d90plus,0))
+                FILTER (WHERE balance_due > 0), 0) AS overdue,
+       mode() WITHIN GROUP (ORDER BY location) FILTER (WHERE coalesce(btrim(location), '') <> '') AS location
+FROM erp.ap_aging
+GROUP BY supplier
+HAVING coalesce(sum(balance_due), 0) > 0
+ORDER BY balance DESC, party
+LIMIT 10`;
+
 const BANK_TRANSFERS_SQL = `
 SELECT transfer_date, from_account, to_account, coalesce(amount, 0) AS amount
 FROM erp.bank_transfers
@@ -362,14 +407,18 @@ ORDER BY transfer_date DESC, amount DESC
 LIMIT 50`;
 
 export async function getErpFinance(): Promise<ErpFinance> {
-  const [totals, top, received, byLoc, transfers, labels] = await Promise.all([
+  const [totals, top, received, byLoc, transfers, labels, ap, topAp] = await Promise.all([
     erpQuery(AR_TOTALS_SQL),
     erpQuery(TOP_OVERDUE_SQL),
     receivedFromView(),
     erpQuery(AR_BY_LOCATION_SQL),
     erpQuery(BANK_TRANSFERS_SQL),
     locationLabels(),
+    erpQuery(AP_TOTALS_SQL),
+    erpQuery(TOP_PAYABLES_SQL),
   ]);
+  const p = ap[0] ?? {};
+  const p1 = usd(p.d1_30), p2 = usd(p.d31_60), p3 = usd(p.d61_90), p4 = usd(p.d90plus), pc = usd(p.current);
   const t = totals[0] ?? {};
   const d1 = usd(t.d1_30), d2 = usd(t.d31_60), d3 = usd(t.d61_90), d4 = usd(t.d90plus);
   const current = usd(t.current);
@@ -395,6 +444,20 @@ export async function getErpFinance(): Promise<ErpFinance> {
       salesRep: (x.sales_rep as string | null) ?? null,
     })),
     received,
+    payable: {
+      total: pc + p1 + p2 + p3 + p4, current: pc,
+      d1_30: p1, d31_60: p2, d61_90: p3, d90plus: p4,
+      credits: usd(p.credits), overdue: p1 + p2 + p3 + p4,
+      due7d: usd(p.due7d), suppliers: int(p.suppliers),
+    },
+    topPayables: topAp.map(x => ({
+      party: String(x.party ?? '').trim(),
+      code: (x.code as string | null) ?? null,
+      kind: (x.kind as string | null) ?? null,
+      category: (x.category as string | null) ?? null,
+      balance: usd(x.balance), dueDate: dayOf(x.due_date), overdue: usd(x.overdue),
+      location: (x.location as string | null) ?? null,
+    })),
     byLocation: byLoc.map(x => ({
       code: String(x.code), label: labelOf(labels, String(x.code)),
       receivable: usd(x.receivable), overdue: usd(x.overdue), credits: usd(x.credits),
