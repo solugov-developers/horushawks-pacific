@@ -69,7 +69,7 @@ cmd_first_time() {
              db/005_movement_kinds_and_status.sql db/006_update_scraper_actions.sql \
              db/007_saved_queries.sql db/008_users_and_reaper.sql db/009_irgstone.sql \
              db/010_fix_column_maps.sql db/011_thestoneindustry.sql \
-             db/012_tsi_source_key.sql db/013_tsi_enrich.sql db/014_irgstone_source_key.sql db/015_irgstone_clean_serial.sql db/016_irgstone_remap_by_name.sql db/017_finish_column.sql db/018_fix_identifiers.sql db/019_zucchi_location.sql db/020_reconcile_bi_keys.sql db/021_image_url.sql db/022_image_url_stoneprofits.sql db/023_image_url_null_when_no_cover.sql db/024_image_assets.sql db/025_image_originals.sql db/026_pacshore.sql db/027_item_name_indexes.sql db/028_movements_category_and_covering_indexes.sql db/029_market_matviews.sql db/030_history_scraper_key_job.sql db/031_imperialtile.sql \
+             db/012_tsi_source_key.sql db/013_tsi_enrich.sql db/014_irgstone_source_key.sql db/015_irgstone_clean_serial.sql db/016_irgstone_remap_by_name.sql db/017_finish_column.sql db/018_fix_identifiers.sql db/019_zucchi_location.sql db/020_reconcile_bi_keys.sql db/021_image_url.sql db/022_image_url_stoneprofits.sql db/023_image_url_null_when_no_cover.sql db/024_image_assets.sql db/025_image_originals.sql db/026_pacshore.sql db/027_item_name_indexes.sql db/028_movements_category_and_covering_indexes.sql db/029_market_matviews.sql db/030_history_scraper_key_job.sql db/031_imperialtile.sql db/032_movements_location.sql \
              db/secrets.sql; do
     echo "    aplicando $sql…"
     $SSH "cd $REMOTE_DIR && docker compose exec -T postgres psql -U \$(grep POSTGRES_USER .env | cut -d= -f2) -d \$(grep POSTGRES_DB .env | cut -d= -f2) -v ON_ERROR_STOP=1 < $sql" || echo "    (já aplicada?)"
@@ -113,7 +113,7 @@ cmd_warm() {
              "inventory?source=all&page=1&pageSize=50" "movements?kind=all&page=1&pageSize=50" \
              erp/today erp/finance erp/purchasing "erp/inventory?page=1&pageSize=50" \
              "erp/sales?period=month&groupBy=location" "erp/sales?period=day&groupBy=location" "erp/sales?period=year&groupBy=location" \
-             "erp/holds?page=1&pageSize=50" "erp/reps?period=month" "erp/reps?period=year" "erp/purchase-suggestions?limit=30" "erp/transfers?period=90"; do
+             "erp/holds?page=1&pageSize=50" "erp/reps?period=month" "erp/reps?period=year" "erp/purchase-suggestions?limit=30" "erp/transfers?period=90" map; do
       printf "    %-42s " "$p"; curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOK" "$B/$p";
     done'
 }
