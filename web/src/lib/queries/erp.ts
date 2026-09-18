@@ -1193,3 +1193,335 @@ export async function getErpMaterial(productInput: string): Promise<ErpMaterial 
     competitors,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* v2.2 — /erp/holds                                                   */
+/* ------------------------------------------------------------------ */
+
+export interface ErpHoldRow {
+  product: string; serial: string | null; slabs: number; value: number;
+  customer: string | null; rep: string | null; location: string | null; locationLabel: string | null;
+  heldSince: string | null; expiresAt: string | null; days: number | null;
+  status: 'active' | 'expiring' | 'expired'; jobName: string | null;
+}
+export interface ErpHolds {
+  asOf: string; stale: boolean;
+  summary: { slabs: number; value: number; customers: number; expiringSoon: number; expired: number };
+  page: number; pageSize: number; total: number;
+  rows: ErpHoldRow[];
+}
+
+/** erp.on_hold: uma linha por serial em hold. expiring = vence em <= 3 dias; expired = expiry_date < hoje. */
+const HOLDS_SQL = `
+SELECT max(snapshot_date) OVER () AS snapshot, count(*) OVER () AS total,
+       product, serial, coalesce(slabs, 1) AS slabs, coalesce(total_price, 0) AS value,
+       nullif(btrim(customer), '') AS customer, nullif(btrim(sales_rep), '') AS rep, nullif(btrim(location), '') AS location,
+       coalesce(hold_date, created_date) AS held_since, expiry_date,
+       CASE WHEN coalesce(hold_date, created_date) IS NULL THEN NULL ELSE current_date - coalesce(hold_date, created_date) END AS days,
+       CASE WHEN expiry_date < current_date THEN 'expired'
+            WHEN expiry_date <= current_date + 3 THEN 'expiring' ELSE 'active' END AS status,
+       nullif(btrim(job_name), '') AS job_name
+FROM erp.on_hold
+WHERE ($1::text IS NULL OR btrim(location) = $1) AND ($2::text IS NULL OR btrim(sales_rep) = $2)
+ORDER BY expiry_date ASC NULLS LAST, product, serial
+LIMIT $3 OFFSET $4`;
+const HOLDS_SUMMARY_SQL = `
+SELECT coalesce(sum(coalesce(slabs, 1)), 0) AS slabs, coalesce(sum(total_price), 0) AS value,
+       count(DISTINCT nullif(btrim(customer), '')) AS customers,
+       count(*) FILTER (WHERE expiry_date >= current_date AND expiry_date <= current_date + 3) AS expiring,
+       count(*) FILTER (WHERE expiry_date < current_date) AS expired
+FROM erp.on_hold
+WHERE ($1::text IS NULL OR btrim(location) = $1) AND ($2::text IS NULL OR btrim(sales_rep) = $2)`;
+
+export async function getErpHolds(opts: { location?: string | null; rep?: string | null; page: number; pageSize: number }): Promise<ErpHolds> {
+  const loc = opts.location && opts.location !== 'all' ? opts.location.trim() : null;
+  const rep = opts.rep?.trim() || null;
+  const { page, pageSize } = opts;
+  const [rows, sum, labels] = await Promise.all([
+    erpQuery(HOLDS_SQL, [loc, rep, pageSize, (page - 1) * pageSize]),
+    erpQuery(HOLDS_SUMMARY_SQL, [loc, rep]),
+    locationLabels(),
+  ]);
+  const m = sum[0] ?? {};
+  const snapshot = rows[0]?.snapshot ?? (await erpQuery('SELECT max(snapshot_date) AS s FROM erp.on_hold'))[0]?.s;
+  return {
+    asOf: dayOf(snapshot) ?? '', stale: false,
+    summary: { slabs: int(m.slabs), value: usd(m.value), customers: int(m.customers), expiringSoon: int(m.expiring), expired: int(m.expired) },
+    page, pageSize, total: int(rows[0]?.total),
+    rows: rows.map(r => ({
+      product: String(r.product ?? ''), serial: (r.serial as string | null) ?? null,
+      slabs: int(r.slabs), value: usd(r.value),
+      customer: (r.customer as string | null) ?? null, rep: (r.rep as string | null) ?? null,
+      location: (r.location as string | null) ?? null,
+      locationLabel: r.location ? labelOf(labels, String(r.location)) : null,
+      heldSince: dayOf(r.held_since), expiresAt: dayOf(r.expiry_date),
+      days: r.days == null ? null : int(r.days),
+      status: String(r.status) as ErpHoldRow['status'], jobName: (r.job_name as string | null) ?? null,
+    })),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* v2.2 — /erp/reps e /erp/reps/{name}                                 */
+/* ------------------------------------------------------------------ */
+
+export const REP_PERIODS = ['month', 'year'] as const;
+export type RepPeriod = typeof REP_PERIODS[number];
+export interface ErpRepRow {
+  rep: string; location: string | null; locationLabel: string | null;
+  total: number; orders: number; slabs: number; avgTicket: number; marginPct: number; sharePct: number; rank: number;
+  peerAvgTotal: number | null; peerAvgMarginPct: number | null; deltaPct: number | null;
+}
+export interface ErpReps { asOf: string; stale: boolean; period: RepPeriod; rows: ErpRepRow[] }
+export interface ErpRepDetail extends ErpRepRow {
+  asOf: string; stale: boolean; period: RepPeriod;
+  topCustomers: { customer: string; total: number; orders: number; lastPurchase: string | null }[];
+  categoryMix: { category: string; total: number; sharePct: number }[];
+  monthly: { month: string; total: number; marginPct: number }[];
+  slippingCustomers: { customer: string; previousTotal: number; lastPurchase: string | null }[];
+}
+
+/**
+ * Janelas do scorecard, ancoradas em D (último dia completo com vendas):
+ *  month: [1º dia do mês de D, D] vs mês anterior até o mesmo dia
+ *  year : [1/jan, D] vs mesmo período do ano anterior (prevTotal só se houver dado)
+ */
+const REP_WINDOW_SQL = `
+WITH ${DAY_CTE}
+SELECT d.day, (SELECT max(snapshot_date) FROM erp.sales_lines) AS snapshot,
+  CASE $1 WHEN 'month' THEN date_trunc('month', d.day)::date ELSE date_trunc('year', d.day)::date END AS cur_from,
+  d.day AS cur_to,
+  CASE $1 WHEN 'month' THEN date_trunc('month', d.day - interval '1 month')::date ELSE date_trunc('year', d.day - interval '1 year')::date END AS prev_from,
+  CASE $1 WHEN 'month' THEN (d.day - interval '1 month')::date ELSE (d.day - interval '1 year')::date END AS prev_to
+FROM d`;
+/** Por vendedor (linhas com vendedor), com loja mais frequente e período anterior. */
+const REPS_SQL = `
+SELECT btrim(sales_rep) AS rep,
+       mode() WITHIN GROUP (ORDER BY location) FILTER (WHERE coalesce(btrim(location), '') <> '' AND sale_date BETWEEN $1 AND $2) AS location,
+       coalesce(sum(sale_total) FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS total,
+       count(DISTINCT invoice)  FILTER (WHERE sale_date BETWEEN $1 AND $2)     AS orders,
+       coalesce(sum(slabs)      FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS slabs,
+       coalesce(sum(margin)     FILTER (WHERE sale_date BETWEEN $1 AND $2), 0) AS margin,
+       count(*)                 FILTER (WHERE sale_date BETWEEN $3 AND $4)     AS prev_rows,
+       coalesce(sum(sale_total) FILTER (WHERE sale_date BETWEEN $3 AND $4), 0) AS prev_total
+FROM erp.sales_lines
+WHERE sale_date IS NOT NULL AND sale_date <= snapshot_date AND coalesce(btrim(sales_rep), '') <> ''
+  AND ((sale_date BETWEEN $1 AND $2) OR (sale_date BETWEEN $3 AND $4))
+GROUP BY btrim(sales_rep)
+HAVING sum(sale_total) FILTER (WHERE sale_date BETWEEN $1 AND $2) > 0
+ORDER BY total DESC`;
+
+async function repsBase(period: RepPeriod) {
+  const [win] = await erpQuery(REP_WINDOW_SQL, [period]);
+  if (!win?.day) return null;
+  const range = [dayOf(win.cur_from), dayOf(win.cur_to), dayOf(win.prev_from), dayOf(win.prev_to)];
+  const [rows, labels] = await Promise.all([erpQuery(REPS_SQL, range), locationLabels()]);
+  const grand = rows.reduce((a, r) => a + num(r.total), 0);
+  const pre = rows.map(r => ({
+    rep: String(r.rep), location: (r.location as string | null) ?? null,
+    total: usd(r.total), orders: int(r.orders), slabs: int(r.slabs),
+    marginPct: num(r.total) > 0 ? Number(((num(r.margin) / num(r.total)) * 100).toFixed(1)) : 0,
+    prevTotal: num(r.prev_rows) > 0 ? usd(r.prev_total) : null,
+  }));
+  // pares = vendedores da mesma região (erp.locations.region da loja do vendedor)
+  const byRegion = new Map<string, { total: number; margin: number; n: number }>();
+  for (const p of pre) {
+    const region = regionOf(labels, p.location) ?? '';
+    const acc = byRegion.get(region) ?? { total: 0, margin: 0, n: 0 };
+    acc.total += p.total; acc.margin += p.marginPct; acc.n += 1; byRegion.set(region, acc);
+  }
+  const out: ErpRepRow[] = pre.map((p, i) => {
+    const region = regionOf(labels, p.location) ?? '';
+    const peers = byRegion.get(region);
+    const hasPeers = !!peers && peers.n > 1 && region !== '';
+    return {
+      rep: p.rep, location: p.location, locationLabel: p.location ? labelOf(labels, p.location) : null,
+      total: p.total, orders: p.orders, slabs: p.slabs,
+      avgTicket: p.orders > 0 ? usd(p.total / p.orders) : 0,
+      marginPct: p.marginPct, sharePct: pct(p.total, grand), rank: i + 1,
+      peerAvgTotal: hasPeers ? usd(peers.total / peers.n) : null,
+      peerAvgMarginPct: hasPeers ? Number((peers.margin / peers.n).toFixed(1)) : null,
+      deltaPct: deltaPct(p.total, p.prevTotal),
+    };
+  });
+  return { asOf: dayOf(win.snapshot) ?? '', range, rows: out };
+}
+const pct = (part: number, whole: number) => (whole > 0 ? Number(((part / whole) * 100).toFixed(1)) : 0);
+
+export async function getErpReps(period: RepPeriod): Promise<ErpReps> {
+  const base = await repsBase(period);
+  return { asOf: base?.asOf ?? '', stale: false, period, rows: base?.rows ?? [] };
+}
+
+const REP_TOP_CUSTOMERS_SQL = `
+SELECT customer, sum(sale_total) AS total, count(DISTINCT invoice) AS orders, max(sale_date) AS last_purchase
+FROM erp.sales_lines WHERE btrim(sales_rep) = $1 AND sale_date BETWEEN $2 AND $3 AND coalesce(btrim(customer), '') <> ''
+GROUP BY customer ORDER BY total DESC LIMIT 10`;
+const REP_CATEGORY_MIX_SQL = `
+SELECT coalesce(nullif(btrim(category), ''), '(sem categoria)') AS category, sum(sale_total) AS total
+FROM erp.sales_lines WHERE btrim(sales_rep) = $1 AND sale_date BETWEEN $2 AND $3 AND sale_total > 0
+GROUP BY 1 ORDER BY total DESC LIMIT 12`;
+/** 13 meses até o mês de D (só meses com dado; o snapshot cobre desde jan/2026). */
+const REP_MONTHLY_SQL = `
+SELECT to_char(date_trunc('month', sale_date), 'YYYY-MM') AS month, sum(sale_total) AS total, sum(margin) AS margin
+FROM erp.sales_lines
+WHERE btrim(sales_rep) = $1 AND sale_date <= $2::date AND sale_date > (date_trunc('month', $2::date) - interval '12 months')::date
+GROUP BY 1 ORDER BY 1`;
+/** Clientes com compra nos 12 meses anteriores à janela de 90 d e sem compra nos últimos 90 d. */
+const REP_SLIPPING_SQL = `
+SELECT customer, sum(sale_total) AS previous_total, max(sale_date) AS last_purchase
+FROM erp.sales_lines
+WHERE btrim(sales_rep) = $1 AND coalesce(btrim(customer), '') <> ''
+  AND sale_date > $2::date - 455 AND sale_date <= $2::date - 90
+  AND NOT EXISTS (SELECT 1 FROM erp.sales_lines x WHERE x.customer = erp.sales_lines.customer
+                  AND x.sale_date > $2::date - 90 AND x.sale_date <= $2::date)
+GROUP BY customer HAVING sum(sale_total) > 0 ORDER BY previous_total DESC LIMIT 10`;
+
+export async function getErpRep(name: string, period: RepPeriod): Promise<ErpRepDetail | null> {
+  const base = await repsBase(period);
+  if (!base) return null;
+  const key = nameKey(name);
+  const row = base.rows.find(r => nameKey(r.rep) === key);
+  if (!row) return null;
+  const [from, to] = base.range;
+  const [top, mix, monthly, slipping] = await Promise.all([
+    erpQuery(REP_TOP_CUSTOMERS_SQL, [row.rep, from, to]),
+    erpQuery(REP_CATEGORY_MIX_SQL, [row.rep, from, to]),
+    erpQuery(REP_MONTHLY_SQL, [row.rep, to]),
+    erpQuery(REP_SLIPPING_SQL, [row.rep, to]),
+  ]);
+  const mixTotal = mix.reduce((a, r) => a + num(r.total), 0);
+  return {
+    ...row, asOf: base.asOf, stale: false, period,
+    topCustomers: top.map(r => ({ customer: String(r.customer), total: usd(r.total), orders: int(r.orders), lastPurchase: dayOf(r.last_purchase) })),
+    categoryMix: mix.map(r => ({ category: String(r.category), total: usd(r.total), sharePct: pct(num(r.total), mixTotal) })),
+    monthly: monthly.map(r => ({ month: String(r.month), total: usd(r.total), marginPct: num(r.total) > 0 ? Number(((num(r.margin) / num(r.total)) * 100).toFixed(1)) : 0 })),
+    slippingCustomers: slipping.map(r => ({ customer: String(r.customer), previousTotal: usd(r.previous_total), lastPurchase: dayOf(r.last_purchase) })),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* v2.2 — /erp/purchase-suggestions                                    */
+/* ------------------------------------------------------------------ */
+
+export interface ErpPurchaseSuggestion {
+  product: string; category: string | null; sold90d: number; available: number; inTransit: number;
+  daysOfStock: number | null; coverageTargetDays: number; suggestedSlabs: number; imageUrl: string | null; marketGap: null;
+}
+export interface ErpPurchaseSuggestions { asOf: string; stale: boolean; rows: ErpPurchaseSuggestion[] }
+
+/** Fast movers: top N por sold90d (itens de chapa), com estoque livre e POs a caminho. */
+const SUGGESTIONS_SQL = `
+WITH sold AS (
+  SELECT item AS product, coalesce(sum(slabs), 0) AS sold90
+  FROM erp.sales_lines WHERE sale_date > snapshot_date - 90 AND sale_date <= snapshot_date GROUP BY item
+),
+st AS (
+  SELECT product, mode() WITHIN GROUP (ORDER BY category) FILTER (WHERE coalesce(btrim(category), '') <> '') AS category,
+         count(*) FILTER (WHERE status = 'in_stock') AS available
+  FROM erp.stock WHERE ${SLAB_ITEMS} GROUP BY product
+),
+po AS (SELECT product, coalesce(sum(slabs), 0) AS in_transit FROM erp.in_transit WHERE ${NOT_RECEIVED} GROUP BY product)
+SELECT (SELECT max(snapshot_date) FROM erp.stock) AS snapshot, sold.product, st.category,
+       sold.sold90, coalesce(st.available, 0) AS available, coalesce(po.in_transit, 0) AS in_transit
+FROM sold LEFT JOIN st ON st.product = sold.product LEFT JOIN po ON po.product = sold.product
+WHERE sold.sold90 > 0
+ORDER BY sold.sold90 DESC, sold.product
+LIMIT $1`;
+
+export async function getErpPurchaseSuggestions(limit: number): Promise<ErpPurchaseSuggestions> {
+  const [rows, thumbs] = await Promise.all([erpQuery(SUGGESTIONS_SQL, [limit]), pacshoreThumbMap()]);
+  return {
+    asOf: dayOf(rows[0]?.snapshot) ?? '', stale: false,
+    rows: rows.map((r, i) => {
+      const sold90d = int(r.sold90), available = int(r.available), inTransit = int(r.in_transit);
+      const coverageTargetDays = i < 15 ? 180 : 90;
+      const daily = sold90d / 90;
+      return {
+        product: String(r.product), category: (r.category as string | null) ?? null,
+        sold90d, available, inTransit,
+        daysOfStock: daily > 0 ? Math.round(available / daily) : null,
+        coverageTargetDays,
+        suggestedSlabs: Math.max(0, Math.round(daily * coverageTargetDays - available - inTransit)),
+        imageUrl: thumbFor(thumbs, String(r.product)), marketGap: null,
+      };
+    }),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* v2.2 — /erp/transfers (depende da view erp.transfers)               */
+/* ------------------------------------------------------------------ */
+
+export const TRANSFER_PERIODS = [30, 90, 365] as const;
+export interface ErpTransfers {
+  asOf: string; stale: boolean; period: number;
+  summary: { transfers: number; slabs: number; avgLeadDays: number | null; stuckInTransit: number; multiHopSlabs: number };
+  topRoutes: { from: string; fromLabel: string; to: string; toLabel: string; transfers: number; slabs: number; avgLeadDays: number | null }[];
+  stuck: { transfer: string; product: string | null; serial: string | null; from: string | null; to: string | null; sentAt: string | null; days: number }[];
+  byLocation: { code: string; label: string; inbound: number; outbound: number; net: number }[];
+}
+export class ErpViewMissingError extends Error {
+  constructor(view: string) { super(`view ${view} ainda não existe no RDS`); this.name = 'ErpViewMissingError'; }
+}
+
+/**
+ * Colunas ASSUMIDAS para erp.transfers (view sobre inventory_transfer_analysis,
+ * pedida ao StoneProfits em 2026-09-18, ainda não publicada): snapshot_date,
+ * transfer (id), product, serial, slabs, from_location, to_location,
+ * sent_date (date), received_date (date, NULL em trânsito). Ajustar aqui se
+ * a view vier com outros nomes.
+ */
+const TRANSFERS_SUMMARY_SQL = `
+WITH t AS (
+  SELECT * FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date
+)
+SELECT (SELECT max(snapshot_date) FROM erp.transfers) AS snapshot,
+       count(DISTINCT transfer) AS transfers, coalesce(sum(coalesce(slabs, 1)), 0) AS slabs,
+       avg(received_date - sent_date) FILTER (WHERE received_date IS NOT NULL) AS avg_lead,
+       count(*) FILTER (WHERE received_date IS NULL AND sent_date < current_date - 14) AS stuck,
+       (SELECT coalesce(sum(n), 0) FROM (SELECT serial, count(*) AS n FROM t WHERE serial IS NOT NULL GROUP BY serial HAVING count(*) >= 3) h) AS multi_hop
+FROM t`;
+const TRANSFERS_ROUTES_SQL = `
+SELECT btrim(from_location) AS from_code, btrim(to_location) AS to_code, count(DISTINCT transfer) AS transfers,
+       coalesce(sum(coalesce(slabs, 1)), 0) AS slabs, avg(received_date - sent_date) FILTER (WHERE received_date IS NOT NULL) AS avg_lead
+FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date
+GROUP BY 1, 2 ORDER BY slabs DESC LIMIT 10`;
+const TRANSFERS_STUCK_SQL = `
+SELECT transfer::text AS transfer, product, serial, btrim(from_location) AS from_code, btrim(to_location) AS to_code,
+       sent_date, current_date - sent_date AS days
+FROM erp.transfers WHERE received_date IS NULL AND sent_date < current_date - 14
+ORDER BY sent_date ASC LIMIT 50`;
+const TRANSFERS_BY_LOCATION_SQL = `
+WITH t AS (SELECT * FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date),
+x AS (
+  SELECT btrim(to_location) AS code, coalesce(sum(coalesce(slabs, 1)), 0) AS inbound, 0 AS outbound FROM t GROUP BY 1
+  UNION ALL
+  SELECT btrim(from_location), 0, coalesce(sum(coalesce(slabs, 1)), 0) FROM t GROUP BY 1
+)
+SELECT code, sum(inbound) AS inbound, sum(outbound) AS outbound FROM x WHERE coalesce(code, '') <> '' GROUP BY code ORDER BY code`;
+
+export async function getErpTransfers(period: number): Promise<ErpTransfers> {
+  const exists = await erpQuery<{ ok: unknown }>('SELECT to_regclass($1) AS ok', ['erp.transfers']);
+  if (!exists[0]?.ok) throw new ErpViewMissingError('erp.transfers');
+  const [sum, routes, stuck, byLoc, labels] = await Promise.all([
+    erpQuery(TRANSFERS_SUMMARY_SQL, [period]), erpQuery(TRANSFERS_ROUTES_SQL, [period]),
+    erpQuery(TRANSFERS_STUCK_SQL), erpQuery(TRANSFERS_BY_LOCATION_SQL, [period]), locationLabels(),
+  ]);
+  const m = sum[0] ?? {};
+  const lead = (v: unknown) => (v == null ? null : Number(num(v).toFixed(1)));
+  return {
+    asOf: dayOf(m.snapshot) ?? '', stale: false, period,
+    summary: { transfers: int(m.transfers), slabs: int(m.slabs), avgLeadDays: lead(m.avg_lead), stuckInTransit: int(m.stuck), multiHopSlabs: int(m.multi_hop) },
+    topRoutes: routes.map(r => ({
+      from: String(r.from_code ?? ''), fromLabel: labelOf(labels, String(r.from_code ?? '')),
+      to: String(r.to_code ?? ''), toLabel: labelOf(labels, String(r.to_code ?? '')),
+      transfers: int(r.transfers), slabs: int(r.slabs), avgLeadDays: lead(r.avg_lead),
+    })),
+    stuck: stuck.map(r => ({
+      transfer: String(r.transfer), product: (r.product as string | null) ?? null, serial: (r.serial as string | null) ?? null,
+      from: (r.from_code as string | null) ?? null, to: (r.to_code as string | null) ?? null, sentAt: dayOf(r.sent_date), days: int(r.days),
+    })),
+    byLocation: byLoc.map(r => ({ code: String(r.code), label: labelOf(labels, String(r.code)), inbound: int(r.inbound), outbound: int(r.outbound), net: int(r.inbound) - int(r.outbound) })),
+  };
+}

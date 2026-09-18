@@ -112,7 +112,8 @@ cmd_warm() {
     for p in overview "sales?period=7&source=all" "sales?period=30&source=all" "sales?period=90&source=all" \
              "inventory?source=all&page=1&pageSize=50" "movements?kind=all&page=1&pageSize=50" \
              erp/today erp/finance erp/purchasing "erp/inventory?page=1&pageSize=50" \
-             "erp/sales?period=month&groupBy=location" "erp/sales?period=day&groupBy=location" "erp/sales?period=year&groupBy=location"; do
+             "erp/sales?period=month&groupBy=location" "erp/sales?period=day&groupBy=location" "erp/sales?period=year&groupBy=location" \
+             "erp/holds?page=1&pageSize=50" "erp/reps?period=month" "erp/reps?period=year" "erp/purchase-suggestions?limit=30" "erp/transfers?period=90"; do
       printf "    %-42s " "$p"; curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" -H "Authorization: Bearer $TOK" "$B/$p";
     done'
 }
