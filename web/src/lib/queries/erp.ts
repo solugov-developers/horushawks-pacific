@@ -100,6 +100,14 @@ export interface ErpToday {
     inTransitSlabs: number; inTransitContainers: number;
   };
   attention: ErpAttention[];
+  /** v2.2: destaques do último dia completo de vendas (sales.date), até 5 por lista */
+  highlights: {
+    biggestDeals: { invoice: string; customer: string | null; location: string | null; locationLabel: string | null; rep: string | null; total: number; marginPct: number | null; slabs: number }[];
+    bestMargins: { invoice: string; customer: string | null; item: string | null; total: number; marginPct: number }[];
+    thinMargins: { invoice: string; customer: string | null; item: string | null; total: number; marginPct: number }[];
+    unusualDiscounts: { invoice: string; customer: string | null; item: string | null; unitPrice: number; medianUnitPrice: number; discountPct: number }[];
+    arrivals: { slabs: number; cost: number; pos: number; suppliers: string[] };
+  };
   market: { totalSlabs: number; weekDeltaPct: number | null; arrived7d: number; removed7d: number } | null;
 }
 
@@ -181,6 +189,49 @@ SELECT
   (SELECT count(DISTINCT container) FROM erp.in_transit
      WHERE ${NOT_RECEIVED} AND coalesce(btrim(container), '') <> '')                    AS transit_containers`;
 
+/* Destaques do dia D = último dia completo com vendas (mesmo de sales.date). margin_pct é fração. */
+const DAY_CTE = `d AS (
+  SELECT sale_date AS day FROM erp.sales_lines
+  WHERE sale_date <= snapshot_date - 1 GROUP BY 1 HAVING sum(sale_total) > 0
+  ORDER BY 1 DESC LIMIT 1
+)`;
+const HL_DEALS_SQL = `
+WITH ${DAY_CTE}
+SELECT invoice::text AS invoice, max(customer) AS customer, max(nullif(btrim(location), '')) AS location, max(sales_rep) AS rep,
+       sum(sale_total) AS total, 100 * sum(margin) / nullif(sum(sale_total), 0) AS margin_pct, coalesce(sum(slabs), 0) AS slabs
+FROM erp.sales_lines, d WHERE sale_date = d.day AND coalesce(btrim(invoice::text), '') <> ''
+GROUP BY invoice ORDER BY total DESC LIMIT 5`;
+/** Linhas Product com valor; melhores margens (desc) e margens finas (< 15% e > $1.000). */
+const HL_MARGINS_SQL = `
+WITH ${DAY_CTE}, l AS (
+  SELECT invoice::text AS invoice, customer, item, sale_total, margin_pct FROM erp.sales_lines, d
+  WHERE sale_date = d.day AND coalesce(line_type, '') ~* 'product' AND sale_total > 0 AND margin_pct IS NOT NULL
+)
+(SELECT 'best' AS bucket, * FROM l ORDER BY margin_pct DESC, sale_total DESC LIMIT 5)
+UNION ALL
+(SELECT 'thin', * FROM l WHERE margin_pct < 0.15 AND sale_total > 1000 ORDER BY margin_pct ASC, sale_total DESC LIMIT 5)`;
+/** Preço unitário < 80% da mediana do item nos últimos 90 d (itens com >= 3 linhas). */
+const HL_DISCOUNTS_SQL = `
+WITH ${DAY_CTE}, med AS (
+  SELECT item, (percentile_cont(0.5) WITHIN GROUP (ORDER BY sale_total / qty))::numeric AS med
+  FROM erp.sales_lines
+  WHERE sale_date > snapshot_date - 90 AND sale_date <= snapshot_date
+    AND coalesce(line_type, '') ~* 'product' AND qty > 0 AND sale_total > 0
+  GROUP BY item HAVING count(*) >= 3
+)
+SELECT l.invoice::text AS invoice, l.customer, l.item, l.sale_total / l.qty AS unit_price, m.med AS median_price,
+       100 * (1 - (l.sale_total / l.qty) / m.med) AS discount_pct
+FROM erp.sales_lines l JOIN med m ON m.item = l.item, d
+WHERE l.sale_date = d.day AND coalesce(l.line_type, '') ~* 'product' AND l.qty > 0 AND l.sale_total > 0
+  AND l.sale_total / l.qty < 0.8 * m.med
+ORDER BY discount_pct DESC LIMIT 5`;
+const HL_ARRIVALS_SQL = `
+WITH ${DAY_CTE}
+SELECT coalesce(sum(slabs), 0) AS slabs, coalesce(sum(coalesce(landed_total_cost, fob_total_cost)), 0) AS cost,
+       count(DISTINCT po) AS pos,
+       coalesce(array_agg(DISTINCT btrim(supplier)) FILTER (WHERE coalesce(btrim(supplier), '') <> ''), '{}') AS suppliers
+FROM erp.received, d WHERE received_date = d.day`;
+
 const OVERDUE_CUSTOMERS_SQL = `
 SELECT customer, max(nullif(btrim(customer_code), '')) AS customer_code,
        coalesce(sum(d90plus) FILTER (WHERE balance_due > 0), 0) AS d90plus,
@@ -201,7 +252,7 @@ ORDER BY days_late DESC, slabs DESC
 LIMIT $1`;
 
 export async function getErpToday(): Promise<ErpToday> {
-  const [sales, today, kpis, overdue, late, labels, market] = await Promise.all([
+  const [sales, today, kpis, overdue, late, labels, market, deals, margins, discounts, arrivals] = await Promise.all([
     erpQuery(SALES_SQL),
     erpQuery(SALES_TODAY_SQL),
     erpQuery(KPI_SQL),
@@ -210,9 +261,31 @@ export async function getErpToday(): Promise<ErpToday> {
     locationLabels(),
     // Bloco "Mercado." reaproveita o overview (mesma chave de cache da rota /overview).
     cached('/api/mobile/v1/overview?', getMobileOverview).then(o => o.body).catch(() => null),
+    erpQuery(HL_DEALS_SQL), erpQuery(HL_MARGINS_SQL), erpQuery(HL_DISCOUNTS_SQL), erpQuery(HL_ARRIVALS_SQL),
   ]);
 
   const s = sales[0] ?? {};
+  const pct1 = (v: unknown): number => Number(num(v).toFixed(1));
+  const marginRow = (r: Record<string, unknown>) => ({
+    invoice: String(r.invoice), customer: (r.customer as string | null) ?? null, item: (r.item as string | null) ?? null,
+    total: usd(r.sale_total), marginPct: pct1(num(r.margin_pct) * 100),
+  });
+  const ar = arrivals[0] ?? {};
+  const highlights: ErpToday['highlights'] = {
+    biggestDeals: deals.map(r => ({
+      invoice: String(r.invoice), customer: (r.customer as string | null) ?? null,
+      location: (r.location as string | null) ?? null, locationLabel: r.location ? labelOf(labels, String(r.location)) : null,
+      rep: (r.rep as string | null) ?? null, total: usd(r.total),
+      marginPct: r.margin_pct == null ? null : pct1(r.margin_pct), slabs: int(r.slabs),
+    })),
+    bestMargins: margins.filter(r => r.bucket === 'best').map(marginRow),
+    thinMargins: margins.filter(r => r.bucket === 'thin').map(marginRow),
+    unusualDiscounts: discounts.map(r => ({
+      invoice: String(r.invoice), customer: (r.customer as string | null) ?? null, item: (r.item as string | null) ?? null,
+      unitPrice: pct1(r.unit_price), medianUnitPrice: pct1(r.median_price), discountPct: pct1(r.discount_pct),
+    })),
+    arrivals: { slabs: int(ar.slabs), cost: usd(ar.cost), pos: int(ar.pos), suppliers: (ar.suppliers as string[]) ?? [] },
+  };
   const k = kpis[0] ?? {};
   const total = usd(s.total);
   const sameWeekday = usd(s.same_weekday_last_week);
@@ -261,6 +334,7 @@ export async function getErpToday(): Promise<ErpToday> {
       inTransitSlabs: int(k.transit_slabs), inTransitContainers: int(k.transit_containers),
     },
     attention: attention.slice(0, ATTENTION_MAX),
+    highlights,
     market: market ? {
       totalSlabs: market.totalSlabs, weekDeltaPct: market.weekDeltaPct,
       arrived7d: market.arrived7d, removed7d: market.removed7d,
