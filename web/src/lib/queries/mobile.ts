@@ -21,11 +21,8 @@ const COMPETITOR_IDS = sql`(SELECT id FROM scrapers WHERE kind = 'competitor')`;
 // drizzle expande um array JS como (a, b, c) — um record —, não como text[]; por isso ARRAY[...] explícito.
 const EXCL = sql`ARRAY[${sql.join(EXCLUDED_CATEGORIES.map(c => sql`${c}`), sql`, `)}]::text[]`;
 const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}))`;
-/** Mesmo filtro para movements (alias m): olha a categoria da linha de slabs_history do próprio movimento. */
-// TODO(HorusHawks): a versão correlata (NOT EXISTS em slabs_history por movimento) levou /movements a 56 s e
-// /overview e /sales a >60 s em produção (2026-09-17). Desligada até existir uma forma barata: CTE única de
-// (scraper_id, source_key) excluídos com índice em slabs_history(category_name), ou coluna category em movements.
-const NOT_EXCLUDED_MOV = sql`TRUE`;
+/** Mesmo filtro para movements (alias m): movements.category_name é preenchida pelo worker (db/028), sem subconsulta. */
+const NOT_EXCLUDED_MOV = sql`NOT (coalesce(m.category_name, '') = ANY(${EXCL}))`;
 /**
  * Espessura: coluna thickness da fonte; se vazia (ex.: Encore), o prefixo do
  * nome do item ("3cm Cristallo", "12mm …"). \y = limite de palavra no Postgres.
@@ -181,9 +178,7 @@ export async function getMobileSales(period: number, source?: string | null): Pr
       SELECT coalesce(m.item_name, '(unnamed)') AS item_name,
              count(*)::int AS sold,
              array_agg(DISTINCT s.name ORDER BY s.name) AS sources,
-             (SELECT sh.category_name FROM slabs_history sh
-               WHERE sh.item_name = m.item_name AND sh.category_name <> ''
-               ORDER BY sh.id DESC LIMIT 1) AS category
+             mode() WITHIN GROUP (ORDER BY m.category_name) FILTER (WHERE coalesce(m.category_name, '') <> '') AS category
       FROM movements m JOIN scrapers s ON s.id = m.scraper_id
       WHERE m.kind = 'removed' AND s.kind = 'competitor' AND m.detected_at > now() - interval '1 day' * ${days} AND ${NOT_EXCLUDED_MOV}${sf}
       GROUP BY m.item_name

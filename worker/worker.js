@@ -244,79 +244,79 @@ async function computeMovements(client, ctx) {
 
   const sql = `
     WITH cur AS (
-      SELECT source_key, item_name, price, available_qty, location, on_hold
+      SELECT source_key, item_name, category_name, price, available_qty, location, on_hold
       FROM slabs_history WHERE scraper_id = $1 AND job_id = $2
     ), prev AS (
-      SELECT source_key, item_name, price, available_qty, location, on_hold
+      SELECT source_key, item_name, category_name, price, available_qty, location, on_hold
       FROM slabs_history WHERE scraper_id = $1 AND job_id = $3
     ),
     added AS (
-      SELECT c.source_key, c.item_name FROM cur c
+      SELECT c.source_key, c.item_name, c.category_name FROM cur c
       LEFT JOIN prev p ON p.source_key = c.source_key
       WHERE p.source_key IS NULL
     ),
     removed AS (
-      SELECT p.source_key, p.item_name FROM prev p
+      SELECT p.source_key, p.item_name, p.category_name FROM prev p
       LEFT JOIN cur c ON c.source_key = p.source_key
       WHERE c.source_key IS NULL
     ),
     price_changed AS (
-      SELECT c.source_key, c.item_name, p.price AS prev_price, c.price AS next_price
+      SELECT c.source_key, c.item_name, c.category_name, p.price AS prev_price, c.price AS next_price
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.price IS DISTINCT FROM p.price
     ),
     qty_changed AS (
-      SELECT c.source_key, c.item_name, p.available_qty AS prev_q, c.available_qty AS next_q
+      SELECT c.source_key, c.item_name, c.category_name, p.available_qty AS prev_q, c.available_qty AS next_q
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.available_qty IS DISTINCT FROM p.available_qty
     ),
     location_changed AS (
-      SELECT c.source_key, c.item_name, p.location AS prev_loc, c.location AS next_loc
+      SELECT c.source_key, c.item_name, c.category_name, p.location AS prev_loc, c.location AS next_loc
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.location IS DISTINCT FROM p.location
         AND p.location IS NOT NULL
         AND c.location IS NOT NULL
     ),
     held AS (
-      SELECT c.source_key, c.item_name, p.on_hold AS prev_h, c.on_hold AS next_h
+      SELECT c.source_key, c.item_name, c.category_name, p.on_hold AS prev_h, c.on_hold AS next_h
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.on_hold IS DISTINCT FROM p.on_hold
         AND c.on_hold IS TRUE
     ),
     released AS (
-      SELECT c.source_key, c.item_name, p.on_hold AS prev_h, c.on_hold AS next_h
+      SELECT c.source_key, c.item_name, c.category_name, p.on_hold AS prev_h, c.on_hold AS next_h
       FROM cur c JOIN prev p ON p.source_key = c.source_key
       WHERE c.on_hold IS DISTINCT FROM p.on_hold
         AND (c.on_hold IS FALSE OR c.on_hold IS NULL)
         AND p.on_hold IS TRUE
     ),
     ins_a AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name)
-      SELECT $1, $2, $3, source_key, 'added', item_name FROM added RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name)
+      SELECT $1, $2, $3, source_key, 'added', item_name, category_name FROM added RETURNING 1
     ),
     ins_r AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name)
-      SELECT $1, $2, $3, source_key, 'removed', item_name FROM removed RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name)
+      SELECT $1, $2, $3, source_key, 'removed', item_name, category_name FROM removed RETURNING 1
     ),
     ins_p AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
-      SELECT $1, $2, $3, source_key, 'price_changed', item_name, prev_price::text, next_price::text FROM price_changed RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'price_changed', item_name, category_name, prev_price::text, next_price::text FROM price_changed RETURNING 1
     ),
     ins_q AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
-      SELECT $1, $2, $3, source_key, 'qty_changed', item_name, prev_q::text, next_q::text FROM qty_changed RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'qty_changed', item_name, category_name, prev_q::text, next_q::text FROM qty_changed RETURNING 1
     ),
     ins_t AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
-      SELECT $1, $2, $3, source_key, 'transferred', item_name, prev_loc, next_loc FROM location_changed RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'transferred', item_name, category_name, prev_loc, next_loc FROM location_changed RETURNING 1
     ),
     ins_h AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
-      SELECT $1, $2, $3, source_key, 'held', item_name, prev_h::text, next_h::text FROM held RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'held', item_name, category_name, prev_h::text, next_h::text FROM held RETURNING 1
     ),
     ins_rel AS (
-      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, prev_value, next_value)
-      SELECT $1, $2, $3, source_key, 'released', item_name, prev_h::text, next_h::text FROM released RETURNING 1
+      INSERT INTO movements (scraper_id, job_id, prev_job_id, source_key, kind, item_name, category_name, prev_value, next_value)
+      SELECT $1, $2, $3, source_key, 'released', item_name, category_name, prev_h::text, next_h::text FROM released RETURNING 1
     )
     SELECT
       (SELECT count(*) FROM added)             AS added,
