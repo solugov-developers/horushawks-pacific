@@ -22,10 +22,10 @@ const COMPETITOR_IDS = sql`(SELECT id FROM scrapers WHERE kind = 'competitor')`;
 const EXCL = sql`ARRAY[${sql.join(EXCLUDED_CATEGORIES.map(c => sql`${c}`), sql`, `)}]::text[]`;
 const NOT_EXCLUDED_SH = sql`NOT (coalesce(sh.category_name, '') = ANY(${EXCL}))`;
 /** Mesmo filtro para movements (alias m): olha a categoria da linha de slabs_history do próprio movimento. */
-const NOT_EXCLUDED_MOV = sql`NOT EXISTS (
-  SELECT 1 FROM slabs_history x
-  WHERE x.scraper_id = m.scraper_id AND x.source_key = m.source_key
-    AND x.job_id IN (m.job_id, m.prev_job_id) AND x.category_name = ANY(${EXCL}))`;
+// TODO(HorusHawks): a versão correlata (NOT EXISTS em slabs_history por movimento) levou /movements a 56 s e
+// /overview e /sales a >60 s em produção (2026-09-17). Desligada até existir uma forma barata: CTE única de
+// (scraper_id, source_key) excluídos com índice em slabs_history(category_name), ou coluna category em movements.
+const NOT_EXCLUDED_MOV = sql`TRUE`;
 /**
  * Espessura: coluna thickness da fonte; se vazia (ex.: Encore), o prefixo do
  * nome do item ("3cm Cristallo", "12mm …"). \y = limite de palavra no Postgres.
