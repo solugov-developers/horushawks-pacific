@@ -1474,7 +1474,7 @@ export class ErpViewMissingError extends Error {
  */
 const TRANSFERS_SUMMARY_SQL = `
 WITH t AS (
-  SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date
+  SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - make_interval(days => $1::int) AND transfer_date <= snapshot_date
 )
 SELECT (SELECT max(snapshot_date) FROM erp.transfers) AS snapshot,
        count(DISTINCT transfer) AS transfers, count(*) AS slabs,
@@ -1485,7 +1485,7 @@ FROM t`;
 const TRANSFERS_ROUTES_SQL = `
 SELECT btrim(from_location) AS from_code, btrim(to_location) AS to_code, count(DISTINCT transfer) AS transfers,
        count(*) AS slabs, avg(lead_days) FILTER (WHERE lead_days IS NOT NULL) AS avg_lead
-FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date
+FROM erp.transfers WHERE transfer_date > snapshot_date - make_interval(days => $1::int) AND transfer_date <= snapshot_date
 GROUP BY 1, 2 ORDER BY slabs DESC LIMIT 10`;
 const TRANSFERS_STUCK_SQL = `
 SELECT transfer::text AS transfer, product, serial, btrim(from_location) AS from_code, btrim(to_location) AS to_code,
@@ -1493,7 +1493,7 @@ SELECT transfer::text AS transfer, product, serial, btrim(from_location) AS from
 FROM erp.transfers WHERE received_date IS NULL AND transfer_date < current_date - 14
 ORDER BY transfer_date ASC LIMIT 50`;
 const TRANSFERS_BY_LOCATION_SQL = `
-WITH t AS (SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date),
+WITH t AS (SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - make_interval(days => $1::int) AND transfer_date <= snapshot_date),
 x AS (
   SELECT btrim(to_location) AS code, count(*) AS inbound, 0 AS outbound FROM t GROUP BY 1
   UNION ALL
