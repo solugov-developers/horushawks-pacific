@@ -1466,38 +1466,38 @@ export class ErpViewMissingError extends Error {
 }
 
 /**
- * Colunas ASSUMIDAS para erp.transfers (view sobre inventory_transfer_analysis,
- * pedida ao StoneProfits em 2026-09-18, ainda não publicada): snapshot_date,
- * transfer (id), product, serial, slabs, from_location, to_location,
- * sent_date (date), received_date (date, NULL em trânsito). Ajustar aqui se
- * a view vier com outros nomes.
+ * erp.transfers (view sobre inventory_transfer_analysis, publicada 2026-09-18):
+ * snapshot_date, transfer, transfer_date, received_date (neste export nunca é
+ * NULL), from_location, to_location, product, serial, quantity, lead_days…
+ * stuck = received_date IS NULL há > 14 d (hoje vazio); lead = lead_days.
+ * Uma linha = uma chapa/serial (quantity em SF), então chapas = count(*).
  */
 const TRANSFERS_SUMMARY_SQL = `
 WITH t AS (
-  SELECT * FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date
+  SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date
 )
 SELECT (SELECT max(snapshot_date) FROM erp.transfers) AS snapshot,
-       count(DISTINCT transfer) AS transfers, coalesce(sum(coalesce(slabs, 1)), 0) AS slabs,
-       avg(received_date - sent_date) FILTER (WHERE received_date IS NOT NULL) AS avg_lead,
-       count(*) FILTER (WHERE received_date IS NULL AND sent_date < current_date - 14) AS stuck,
-       (SELECT coalesce(sum(n), 0) FROM (SELECT serial, count(*) AS n FROM t WHERE serial IS NOT NULL GROUP BY serial HAVING count(*) >= 3) h) AS multi_hop
+       count(DISTINCT transfer) AS transfers, count(*) AS slabs,
+       avg(lead_days) FILTER (WHERE lead_days IS NOT NULL) AS avg_lead,
+       count(*) FILTER (WHERE received_date IS NULL AND transfer_date < current_date - 14) AS stuck,
+       (SELECT coalesce(sum(n), 0) FROM (SELECT serial, count(DISTINCT transfer) AS n FROM t WHERE coalesce(btrim(serial), '') <> '' GROUP BY serial HAVING count(DISTINCT transfer) >= 3) h) AS multi_hop
 FROM t`;
 const TRANSFERS_ROUTES_SQL = `
 SELECT btrim(from_location) AS from_code, btrim(to_location) AS to_code, count(DISTINCT transfer) AS transfers,
-       coalesce(sum(coalesce(slabs, 1)), 0) AS slabs, avg(received_date - sent_date) FILTER (WHERE received_date IS NOT NULL) AS avg_lead
-FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date
+       count(*) AS slabs, avg(lead_days) FILTER (WHERE lead_days IS NOT NULL) AS avg_lead
+FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date
 GROUP BY 1, 2 ORDER BY slabs DESC LIMIT 10`;
 const TRANSFERS_STUCK_SQL = `
 SELECT transfer::text AS transfer, product, serial, btrim(from_location) AS from_code, btrim(to_location) AS to_code,
-       sent_date, current_date - sent_date AS days
-FROM erp.transfers WHERE received_date IS NULL AND sent_date < current_date - 14
-ORDER BY sent_date ASC LIMIT 50`;
+       transfer_date AS sent_date, current_date - transfer_date AS days
+FROM erp.transfers WHERE received_date IS NULL AND transfer_date < current_date - 14
+ORDER BY transfer_date ASC LIMIT 50`;
 const TRANSFERS_BY_LOCATION_SQL = `
-WITH t AS (SELECT * FROM erp.transfers WHERE sent_date > snapshot_date - $1 AND sent_date <= snapshot_date),
+WITH t AS (SELECT * FROM erp.transfers WHERE transfer_date > snapshot_date - $1 AND transfer_date <= snapshot_date),
 x AS (
-  SELECT btrim(to_location) AS code, coalesce(sum(coalesce(slabs, 1)), 0) AS inbound, 0 AS outbound FROM t GROUP BY 1
+  SELECT btrim(to_location) AS code, count(*) AS inbound, 0 AS outbound FROM t GROUP BY 1
   UNION ALL
-  SELECT btrim(from_location), 0, coalesce(sum(coalesce(slabs, 1)), 0) FROM t GROUP BY 1
+  SELECT btrim(from_location), 0, count(*) FROM t GROUP BY 1
 )
 SELECT code, sum(inbound) AS inbound, sum(outbound) AS outbound FROM x WHERE coalesce(code, '') <> '' GROUP BY code ORDER BY code`;
 
